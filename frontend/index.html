@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en" translate="no">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Language" content="en">
+<meta name="google" content="notranslate">
+<title>Image Compression Recommender</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header lang="en">
+  <h1>Image Compression Recommender</h1>
+  <p class="tagline">
+    Upload an image and the service will try five compression settings,
+    measure the resulting quality, and recommend the best balance between
+    file size and visual quality.
+  </p>
+</header>
+
+<main lang="en">
+
+  <!-- Upload panel -->
+  <section class="panel" id="upload-panel">
+    <h2>1. Upload an image</h2>
+
+    <form id="upload-form" novalidate>
+      <!--
+        Custom upload area.
+
+        The real <input type="file"> is visually hidden (.visually-hidden)
+        but remains in the DOM for accessibility: keyboard focus, screen
+        readers, and form submission all work normally. All visible text
+        is owned by this page and will appear in English regardless of
+        the browser's OS locale. See styles.css for the hide rule.
+      -->
+      <div id="dropzone" class="dropzone" tabindex="0"
+           role="button"
+           aria-label="Select image — click or drop a file here">
+        <input type="file" id="file" name="file"
+               accept="image/jpeg,image/png,image/webp"
+               class="visually-hidden" required>
+
+        <div class="dropzone-icon" aria-hidden="true">
+          <!-- Inline SVG so no localized alt text is ever shown. -->
+          <svg viewBox="0 0 24 24" width="36" height="36"
+               fill="none" stroke="currentColor" stroke-width="1.6"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 16V4"></path>
+            <path d="M6 10l6-6 6 6"></path>
+            <path d="M4 20h16"></path>
+          </svg>
+        </div>
+
+        <div class="dropzone-primary" id="dropzone-primary">
+          Drop an image here, or click to browse
+        </div>
+        <div class="dropzone-help">
+          JPEG, PNG, or WebP &middot; up to 25 MB
+        </div>
+
+        <button type="button" class="dropzone-btn" id="select-btn">
+          Select Image
+        </button>
+
+        <div class="dropzone-filename" id="filename-display">
+          No file selected
+        </div>
+      </div>
+
+      <button type="submit" id="submit-btn" class="primary-btn" disabled>
+        Analyze Image
+      </button>
+    </form>
+
+    <div id="status" class="status-line" role="status" aria-live="polite"></div>
+  </section>
+
+  <!-- Empty state -->
+  <section class="panel empty-state" id="empty-state">
+    <p>No image uploaded yet. Select one above to see a compression recommendation.</p>
+  </section>
+
+  <!-- Recommendation panel -->
+  <section class="panel recommendation" id="recommendation-panel" hidden>
+    <div class="label-pill" id="rec-label"></div>
+    <h2 id="rec-headline"></h2>
+    <p class="why" id="rec-why"></p>
+    <ul class="comparison" id="rec-comparison"></ul>
+    <a class="download-btn" id="download-btn" href="#" download>
+      Download the recommended file
+    </a>
+  </section>
+
+  <!-- Preview -->
+  <section class="panel" id="preview-panel" hidden>
+    <h2>2. Image preview</h2>
+    <img id="preview-img" alt="Uploaded image preview">
+    <p class="image-meta" id="image-meta"></p>
+  </section>
+
+  <!-- Variants grid -->
+  <section class="panel" id="variants-panel" hidden>
+    <h2>3. All compression options</h2>
+    <p class="help">
+      Each card is one compression setting.
+      <strong>PSNR</strong> is a technical quality measure — higher is better.
+      <strong>SSIM</strong> is a visual similarity score from 0 to 1 — higher
+      means closer to the original.
+    </p>
+    <div class="variants-grid" id="variants-grid"></div>
+  </section>
+
+  <!-- OAM dev panel — rendered only when oam_features_enabled=true -->
+  <section class="panel dev-only" id="dev-panel" hidden>
+    <h2>Developer / thesis tools</h2>
+    <p class="help">
+      These are visible because <code>ENABLE_OAM_FEATURES=true</code>.
+    </p>
+    <div id="dev-exports"></div>
+  </section>
+
+  <!--
+    COCO Y0 export — also gated by ENABLE_OAM_FEATURES.
+
+    The external MIAU COCO Y0 solver
+    (https://miau.my-x.hu/myx-free/coco/beker_y0.php) is treated as a manual
+    external tool: this app produces text and the user pastes it by hand.
+    No automated submission, no scraping.
+  -->
+  <section class="panel dev-only" id="coco-panel" hidden>
+    <h2>COCO Y0 Export</h2>
+    <p class="help">
+      Use this export to paste ranked data into the external COCO Y0 solver
+      at <a href="https://miau.my-x.hu/myx-free/coco/beker_y0.php"
+           target="_blank" rel="noopener">miau.my-x.hu</a>.
+      This app does <strong>not</strong> submit anything automatically.
+    </p>
+
+    <div class="coco-controls">
+      <label>
+        OAM variant
+        <select id="coco-variant">
+          <option value="minimal">minimal (size, PSNR, SSIM)</option>
+          <option value="extended">extended (+ size_reduction_pct)</option>
+        </select>
+      </label>
+      <label>
+        Step count
+        <input type="number" id="coco-step-count" min="0" max="20" value="0">
+        <span class="help-inline">0 = full ranking</span>
+      </label>
+      <button type="button" id="coco-build-btn" class="dropzone-btn">
+        Build ranked input
+      </button>
+      <span id="coco-status" class="status-line"></span>
+    </div>
+
+    <div id="coco-output" hidden>
+      <div class="coco-summary" id="coco-summary"></div>
+
+      <div class="coco-block">
+        <div class="coco-block-head">
+          <span class="coco-block-title">Ranked matrix</span>
+          <button type="button" class="copy-btn"
+                  data-target="coco-matrix">Copy matrix</button>
+        </div>
+        <pre id="coco-matrix" class="coco-pre"></pre>
+      </div>
+
+      <div class="coco-grid">
+        <div class="coco-block">
+          <div class="coco-block-head">
+            <span class="coco-block-title">Object list</span>
+            <button type="button" class="copy-btn"
+                    data-target="coco-objects">Copy object list</button>
+          </div>
+          <pre id="coco-objects" class="coco-pre coco-pre-tall"></pre>
+        </div>
+        <div class="coco-block">
+          <div class="coco-block-head">
+            <span class="coco-block-title">Attribute list</span>
+            <button type="button" class="copy-btn"
+                    data-target="coco-attributes">Copy attribute list</button>
+          </div>
+          <pre id="coco-attributes" class="coco-pre coco-pre-tall"></pre>
+        </div>
+      </div>
+
+      <div class="coco-actions">
+        <a id="coco-download-btn" class="download-btn" href="#" download>
+          Download COCO input as .txt
+        </a>
+        <a href="https://miau.my-x.hu/myx-free/coco/beker_y0.php"
+           target="_blank" rel="noopener" class="external-link">
+          Open external COCO Y0 solver ↗
+        </a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer lang="en">
+  <p>
+    <a href="/docs" target="_blank" rel="noopener">API docs</a>
+    &middot;
+    <a href="/health" target="_blank" rel="noopener">Service health</a>
+  </p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

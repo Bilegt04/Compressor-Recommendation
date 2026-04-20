@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Environment files (NEVER commit real secrets)
+.env
+.env.local
+.env.*.local
+
+# Runtime data — commit the empty directory structure only
+data/images/*
+data/variants/*
+data/results/*
+data/exports/*
+!data/images/.gitkeep
+!data/variants/.gitkeep
+!data/results/.gitkeep
+!data/exports/.gitkeep
+
+# Build artifacts
+*.log
+dist/
+build/

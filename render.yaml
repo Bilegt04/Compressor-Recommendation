@@ -1,0 +1,24 @@
+# Render blueprint. With this file in the repo root, you can click
+# "New +" → "Blueprint" on the Render dashboard, paste your GitHub repo URL,
+# and Render will set up the service automatically.
+#
+# Free tier notes:
+#   - Service sleeps after ~15 min of inactivity; first request after sleep
+#     takes 30-60s to wake up. Acceptable for a test build.
+#   - Ephemeral filesystem: /app/data is wiped on restart. For a persistent
+#     test corpus, upgrade to a paid disk or use external storage.
+
+services:
+  - type: web
+    name: image-compression-recommender
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: ENABLE_OAM_FEATURES
+        value: "false"
+      - key: MAX_UPLOAD_BYTES
+        value: "26214400"
+      - key: CORS_ORIGINS
+        value: "*"

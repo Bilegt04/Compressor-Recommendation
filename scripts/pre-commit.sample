@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Local git hook. Install with:
+#     cp scripts/pre-commit.sample .git/hooks/pre-commit
+#     chmod +x .git/hooks/pre-commit
+#
+# Blocks any commit that contains unresolved merge-conflict markers.
+
+bash scripts/check_no_conflict_markers.sh

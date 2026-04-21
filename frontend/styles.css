@@ -486,6 +486,133 @@ details > summary {
 }
 details[open] > summary { margin-bottom: 8px; }
 
+/* --- Rank matrix as a real table --- */
+.legend-line {
+  font-size: 12px;
+  color: #555;
+  margin: 0 0 6px;
+}
+.rank-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  background: #fff;
+}
+.rank-table th, .rank-table td {
+  padding: 6px 10px;
+  border: 1px solid #e0e3e8;
+  text-align: left;
+  vertical-align: middle;
+}
+.rank-table thead th {
+  background: #1b2232;
+  color: #e6ebf2;
+  font-weight: 600;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+}
+.rank-table tbody tr:nth-child(even) { background: #fafbfc; }
+.rank-table tbody tr:hover { background: #f0f6ff; }
+.rank-table .cell-oid {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  color: #1b2232;
+  white-space: nowrap;
+}
+.rank-table .cell-rank {
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  width: 80px;
+}
+
+/* Hidden script-type block used as clipboard source. Keep it fully invisible
+ * but still present in the DOM so textContent is available. */
+script[type="text/plain"] {
+  display: none !important;
+}
+
+/* --- COCO compare: warning banner + valid examples + diagnostics --- */
+.coco-warning-banner {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: #fff5f5;
+  border-left: 3px solid #c33;
+  font-size: 13px;
+  color: #6d1f1f;
+  border-radius: 4px;
+}
+.coco-warning-banner strong { color: #b02a2a; }
+
+.coco-examples {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 8px 0 10px;
+}
+@media (max-width: 640px) {
+  .coco-examples { grid-template-columns: 1fr; }
+}
+.coco-example {
+  background: #fafbfc;
+  border: 1px solid #e0e3e8;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.coco-example-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin-bottom: 4px;
+}
+.coco-example-pre {
+  margin: 0;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: #333;
+  white-space: pre;
+  line-height: 1.4;
+}
+
+.coco-diagnostics {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.coco-diagnostics.ok {
+  background: #eefaf2;
+  border-left: 3px solid #2a7;
+  color: #1e5a3e;
+}
+.coco-diagnostics.error {
+  background: #fff5f5;
+  border-left: 3px solid #c33;
+  color: #6d1f1f;
+}
+.coco-diagnostics code {
+  background: rgba(0,0,0,0.05);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.rejected-list {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+.rejected-list li {
+  margin: 2px 0;
+  font-size: 11px;
+}
+.rejected-list code {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  word-break: break-all;
+}
+
 /* ===========================================================================
  * Responsive — generous touch targets on mobile
  * ========================================================================= */

@@ -138,7 +138,8 @@ def test_parser_rejects_no_object_ids():
     try:
         coco_compare.parse_coco_paste("here is some text without any ids\n42")
     except coco_compare.CocoCompareError as e:
-        assert "object IDs" in str(e)
+        msg = str(e)
+        assert ("object_id" in msg.lower() or "object id" in msg.lower()), msg
         print("  parser_rejects_no_object_ids: OK")
     else:
         raise AssertionError("expected CocoCompareError")
@@ -213,7 +214,7 @@ def test_coco_picks_outside_corpus_warns():
     )
     cmp = coco_compare.build_comparison(paste)
     assert "img999_avif_q50" in cmp["summary"]["coco_picks_outside_corpus"]
-    assert any("not in this app" in w for w in cmp["warnings"])
+    assert any("not in the local corpus" in w for w in cmp["warnings"])
     print("  coco_picks_outside_corpus_warns: OK")
 
 
@@ -256,3 +257,108 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# NEW: strict rejection of ranked-matrix input (the audit bug fix)
+# ---------------------------------------------------------------------------
+
+def test_rejects_ranked_matrix_input():
+    """
+    The old parser accepted a ranked-matrix paste by treating the first
+    column's rank as a 'score'. The new parser must reject it with the
+    specific error message the UI surfaces.
+    """
+    matrix_paste = (
+        "object_id\tcompressed_size_kb\tpsnr\tssim\n"
+        "img001_avif_q50\t1\t8\t9\n"
+        "img001_jpeg_q90\t9\t1\t1\n"
+        "img001_webp_q80\t4\t3\t3\n"
+    )
+    try:
+        coco_compare.parse_coco_paste(matrix_paste)
+    except coco_compare.CocoCompareError as e:
+        msg = str(e)
+        assert "ranked matrix" in msg.lower() or "COCO input" in msg, msg
+        # Diagnostics must identify which lines were rejected
+        assert e.diagnostics["n_rejected"] >= 3
+        reasons = [r["reason"] for r in e.diagnostics["rejected_lines"]]
+        assert any("ranked-matrix row" in r for r in reasons), reasons
+        print("  rejects_ranked_matrix_input: OK")
+    else:
+        raise AssertionError("Parser accepted a ranked-matrix paste")
+
+
+def test_rejects_extended_matrix_four_numbers():
+    """Extended OAM has 4 attribute columns. Still a matrix, still reject."""
+    paste = (
+        "img001_avif_q50\t1\t8\t9\t2\n"
+        "img002_jpeg_q90\t9\t1\t1\t5\n"
+    )
+    try:
+        coco_compare.parse_coco_paste(paste)
+    except coco_compare.CocoCompareError as e:
+        assert "ranked matrix" in str(e).lower() or "COCO input" in str(e)
+        print("  rejects_extended_matrix_four_numbers: OK")
+    else:
+        raise AssertionError("Parser accepted a 4-column matrix row")
+
+
+def test_accepts_ranked_list_with_rank_prefix():
+    """A leading '1.' prefix must NOT be misread as a score."""
+    paste = (
+        "1. img001_avif_q50\n"
+        "2. img001_webp_q80\n"
+        "3. img001_jpeg_q90\n"
+    )
+    out = coco_compare.parse_coco_paste(paste)
+    assert out["format_detected"] == "ranked_list", out
+    assert out["ranking"][0] == "img001_avif_q50"
+    assert out["diagnostics"]["n_matched"] == 3
+    assert out["diagnostics"]["n_rejected"] == 0
+    print("  accepts_ranked_list_with_rank_prefix: OK")
+
+
+def test_rejects_mixed_shapes():
+    """Some lines scored, some not → reject as ambiguous."""
+    paste = (
+        "img001_avif_q50 0.99\n"
+        "img001_webp_q80\n"
+        "img001_jpeg_q90 0.80\n"
+    )
+    try:
+        coco_compare.parse_coco_paste(paste)
+    except coco_compare.CocoCompareError as e:
+        assert "mixed" in str(e).lower()
+        print("  rejects_mixed_shapes: OK")
+    else:
+        raise AssertionError("Parser accepted mixed shapes")
+
+
+def test_diagnostics_populated_on_success():
+    paste = "img001_avif_q50 0.99\nimg001_jpeg_q90 0.50\n"
+    out = coco_compare.parse_coco_paste(paste)
+    assert out["diagnostics"]["n_matched"] == 2
+    assert out["diagnostics"]["n_rejected"] == 0
+    print("  diagnostics_populated_on_success: OK")
+
+
+def test_diagnostics_populated_on_rejection():
+    paste = "random text line\nimg001_avif_q50\nsome nonsense\n"
+    out = coco_compare.parse_coco_paste(paste)  # valid ranked_list with noise
+    assert out["format_detected"] == "ranked_list"
+    assert out["diagnostics"]["n_matched"] == 1
+    assert out["diagnostics"]["n_rejected"] == 2
+    reasons = [r["reason"] for r in out["diagnostics"]["rejected_lines"]]
+    assert all("no object_id" in r for r in reasons)
+    print("  diagnostics_populated_on_rejection: OK")
+
+
+print("\n=== strict-parser audit tests ===")
+test_rejects_ranked_matrix_input()
+test_rejects_extended_matrix_four_numbers()
+test_accepts_ranked_list_with_rank_prefix()
+test_rejects_mixed_shapes()
+test_diagnostics_populated_on_success()
+test_diagnostics_populated_on_rejection()
+print("AUDIT TESTS PASSED")

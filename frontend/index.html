@@ -153,13 +153,26 @@
 
       <div id="coco-output" hidden>
         <div class="coco-summary" id="coco-summary"></div>
+        <div class="legend-line">Ranked values only. <strong>1 = best.</strong></div>
         <div class="coco-block">
           <div class="coco-block-head">
             <span class="coco-block-title">Ranked matrix</span>
             <button type="button" class="copy-btn"
-                    data-target="coco-matrix">Copy matrix</button>
+                    data-source="matrix">Copy matrix</button>
           </div>
-          <pre id="coco-matrix" class="coco-pre"></pre>
+          <!--
+            Authoritative display: a real HTML table. One cell per rank value.
+            The tab-separated form is kept for clipboard only (see the hidden
+            <script type="text/plain" id="coco-matrix-raw"> block).
+          -->
+          <div class="table-scroll">
+            <table class="rank-table" id="coco-matrix-table">
+              <thead><tr id="coco-matrix-head"></tr></thead>
+              <tbody id="coco-matrix-body"></tbody>
+            </table>
+          </div>
+          <!-- Hidden verbatim text, used as the clipboard source. -->
+          <script type="text/plain" id="coco-matrix-raw"></script>
         </div>
         <div class="coco-grid">
           <div class="coco-block">
@@ -193,15 +206,39 @@
 
     <details style="margin-top:16px;">
       <summary>2. Compare COCO Y0 result against the app recommendation</summary>
+
+      <div class="coco-warning-banner">
+        <strong>Paste FINAL COCO result only</strong> — not the ranked matrix.
+        The ranked matrix above is the <em>input</em> to the external solver;
+        what you paste here must be its <em>output</em>.
+      </div>
+
       <p class="help" style="margin-top:10px;">
-        Paste the COCO Y0 output below. The parser accepts either
-        <strong>scored</strong> (one object_id and a numeric score per line)
-        or a <strong>ranked list</strong> (object_ids in order, best to worst).
+        Accepted formats:
       </p>
+
+      <div class="coco-examples">
+        <div class="coco-example">
+          <div class="coco-example-title">Ranked list (best → worst)</div>
+          <pre class="coco-example-pre">img001_avif_q50
+img001_webp_q80
+img001_webp_q60
+img001_jpeg_q70
+img001_jpeg_q90</pre>
+        </div>
+        <div class="coco-example">
+          <div class="coco-example-title">Object ID + single numeric score</div>
+          <pre class="coco-example-pre">img001_avif_q50  998765
+img001_webp_q80  998210
+img001_webp_q60  997950
+img001_jpeg_q70  997400
+img001_jpeg_q90  997100</pre>
+        </div>
+      </div>
+
       <textarea id="coco-paste" rows="8"
-                placeholder="img001_avif_q50  0.973
-img001_jpeg_q90  0.541
-..."></textarea>
+                placeholder="Paste the COCO Y0 output here (one object_id per line)"></textarea>
+
       <div class="coco-actions">
         <button type="button" id="coco-compare-btn" class="secondary-btn">
           Run comparison
@@ -210,6 +247,9 @@ img001_jpeg_q90  0.541
            style="display:none;">Download comparison as CSV</a>
         <span id="coco-compare-status" class="status-line"></span>
       </div>
+
+      <div id="coco-parse-diagnostics" class="coco-diagnostics" hidden></div>
+
       <div id="coco-compare-output" hidden>
         <div class="coco-summary" id="coco-compare-summary"></div>
         <div class="table-scroll">

@@ -367,7 +367,9 @@ function initCocoPanel() {
   const statusEl2 = document.getElementById("coco-status");
   const outputBox = document.getElementById("coco-output");
   const summaryEl = document.getElementById("coco-summary");
-  const matrixEl = document.getElementById("coco-matrix");
+  const matrixHead = document.getElementById("coco-matrix-head");
+  const matrixBody = document.getElementById("coco-matrix-body");
+  const matrixRaw = document.getElementById("coco-matrix-raw");
   const objectsEl = document.getElementById("coco-objects");
   const attributesEl = document.getElementById("coco-attributes");
   const cocoDownloadBtn = document.getElementById("coco-download-btn");
@@ -381,6 +383,41 @@ function initCocoPanel() {
     const v = encodeURIComponent(variantSel.value);
     const s = encodeURIComponent(stepInput.value || "0");
     cocoDownloadBtn.href = `/coco/download?oam_variant=${v}&step_count=${s}`;
+  }
+
+  // Render the ranked matrix as a real HTML table. One cell per rank value.
+  // Column headers are suffixed with "_rank" to make it unambiguous that
+  // these are ranks (1 = best), not raw metric values.
+  function renderRankMatrixTable(data) {
+    matrixHead.innerHTML = "";
+    const thOid = document.createElement("th");
+    thOid.textContent = "object_id";
+    matrixHead.appendChild(thOid);
+    for (const a of data.attributes) {
+      const th = document.createElement("th");
+      th.textContent = a + "_rank";
+      matrixHead.appendChild(th);
+    }
+
+    matrixBody.innerHTML = "";
+    for (let i = 0; i < data.object_ids.length; i++) {
+      const tr = document.createElement("tr");
+      const tdOid = document.createElement("td");
+      tdOid.textContent = data.object_ids[i];
+      tdOid.className = "cell-oid";
+      tr.appendChild(tdOid);
+      for (const v of data.ranked_matrix[i]) {
+        const td = document.createElement("td");
+        td.textContent = String(v);
+        td.className = "cell-rank";
+        tr.appendChild(td);
+      }
+      matrixBody.appendChild(tr);
+    }
+
+    // Keep the raw tab-separated form verbatim in a hidden element for the
+    // Copy button. This is what the external solver expects as input.
+    matrixRaw.textContent = data.matrix_text;
   }
 
   async function buildPreview() {
@@ -401,7 +438,7 @@ function initCocoPanel() {
         `attributes: ${data.attributes.join(", ")} ` +
         `(directions: ${data.directions.join(", ")}; 1 = best). ` +
         `Step count: ${data.step_count === 0 ? "full ranking" : data.step_count}.`;
-      matrixEl.textContent = data.matrix_text;
+      renderRankMatrixTable(data);
       objectsEl.textContent = data.object_list_text;
       attributesEl.textContent = data.attribute_list_text;
       updateDownloadHref();
@@ -418,10 +455,21 @@ function initCocoPanel() {
 
   document.querySelectorAll(".copy-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
+      // Either data-target (points at a visible <pre>) or data-source
+      // (logical name — currently only "matrix" → the hidden raw matrix).
+      let text = "";
       const targetId = btn.getAttribute("data-target");
-      const target = document.getElementById(targetId);
-      if (!target) return;
-      const text = target.textContent || "";
+      const source = btn.getAttribute("data-source");
+      if (targetId) {
+        const target = document.getElementById(targetId);
+        if (!target) return;
+        text = target.textContent || "";
+      } else if (source === "matrix") {
+        const raw = document.getElementById("coco-matrix-raw");
+        text = (raw && raw.textContent) || "";
+      }
+      if (!text) return;
+
       try {
         await navigator.clipboard.writeText(text);
         const original = btn.textContent;
@@ -432,13 +480,18 @@ function initCocoPanel() {
           btn.classList.remove("copied");
         }, 1500);
       } catch (_) {
-        const range = document.createRange();
-        range.selectNodeContents(target);
-        const sel = window.getSelection();
-        sel.removeAllRanges();
-        sel.addRange(range);
-        btn.textContent = "Select + Ctrl/⌘ C";
-        setTimeout(() => { btn.textContent = "Copy"; }, 2000);
+        // Fallback: copy via a temporary textarea. Works on insecure origins
+        // and on browsers that block clipboard writes from non-user gestures.
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand("copy"); } catch (_) {}
+        document.body.removeChild(ta);
+        btn.textContent = "Copied ✓";
+        setTimeout(() => { btn.textContent = "Copy"; }, 1500);
       }
     });
   });
@@ -458,6 +511,7 @@ function initCocoComparePanel() {
   const summaryEl = document.getElementById("coco-compare-summary");
   const tableBody = document.querySelector("#coco-compare-table tbody");
   const warningsEl = document.getElementById("coco-compare-warnings");
+  const diagEl = document.getElementById("coco-parse-diagnostics");
 
   function setCmpStatus(text, kind) {
     statusEl3.textContent = text || "";
@@ -472,10 +526,49 @@ function initCocoComparePanel() {
     return td;
   }
 
+  // Render parser diagnostics (on both success and failure paths).
+  // On failure: red banner + rejected-line listing.
+  // On success: compact green banner confirming what was parsed.
+  function renderDiagnostics({ ok, message, diagnostics, format_detected }) {
+    diagEl.hidden = false;
+    diagEl.className = "coco-diagnostics " + (ok ? "ok" : "error");
+
+    const parts = [];
+    if (message) parts.push(`<strong>${escapeHtml(message)}</strong>`);
+    if (format_detected) {
+      parts.push(`Detected format: <code>${escapeHtml(format_detected)}</code>`);
+    }
+    if (diagnostics) {
+      parts.push(
+        `Matched object-id lines: <strong>${diagnostics.n_matched || 0}</strong> · ` +
+        `Rejected lines: <strong>${diagnostics.n_rejected || 0}</strong>`
+      );
+      if (diagnostics.rejected_lines && diagnostics.rejected_lines.length) {
+        const items = diagnostics.rejected_lines.slice(0, 10).map(r =>
+          `<li>line ${r.line_no}: ${escapeHtml(r.reason)} — <code>${escapeHtml(r.text)}</code></li>`
+        ).join("");
+        const overflow = diagnostics.rejected_lines.length > 10
+          ? `<li>… and ${diagnostics.rejected_lines.length - 10} more</li>` : "";
+        parts.push(`<ul class="rejected-list">${items}${overflow}</ul>`);
+      }
+    }
+    diagEl.innerHTML = parts.join("<br>");
+  }
+
+  function clearDiagnostics() {
+    diagEl.hidden = true;
+    diagEl.innerHTML = "";
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[c]));
+  }
+
   function renderComparison(data) {
     const s = data.summary;
     summaryEl.innerHTML =
-      `Format detected: <strong>${data.format_detected}</strong>. ` +
       `Compared <strong>${s.n_images_compared}</strong> of ` +
       `${s.n_images_in_corpus} corpus images ` +
       `(${s.n_images_in_coco_paste} present in paste).<br>` +
@@ -524,6 +617,8 @@ function initCocoComparePanel() {
       return;
     }
     setCmpStatus("Comparing…", "loading");
+    clearDiagnostics();
+    outputEl.hidden = true;
     csvLink.style.display = "none";
 
     try {
@@ -532,13 +627,35 @@ function initCocoComparePanel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ paste }),
       });
+
       if (!r.ok) {
+        // Parser rejected the input. Show the full diagnostics so the user
+        // can see WHY it was rejected and which lines were problematic.
         const err = await r.json().catch(() => ({}));
-        setCmpStatus(err.detail || `Error (${r.status}).`, "error");
+        const detailObj = err && err.detail;
+        let message, diagnostics;
+        if (detailObj && typeof detailObj === "object") {
+          message = detailObj.message || "Parse failed.";
+          diagnostics = detailObj.diagnostics;
+        } else {
+          message = typeof detailObj === "string" ? detailObj
+                  : `Parse failed (${r.status}).`;
+          diagnostics = null;
+        }
+        renderDiagnostics({ ok: false, message, diagnostics,
+                            format_detected: null });
+        setCmpStatus("Input rejected. See details below.", "error");
         return;
       }
+
       const data = await r.json();
       renderComparison(data);
+      renderDiagnostics({
+        ok: true,
+        message: "COCO output accepted.",
+        diagnostics: data.diagnostics,
+        format_detected: data.format_detected,
+      });
 
       csvLink.style.display = "";
       csvLink.textContent = "Download comparison as CSV";

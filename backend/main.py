@@ -323,11 +323,17 @@ def coco_compare_endpoint(req: CocoCompareRequest):
     """
     Accept pasted COCO Y0 output and return per-image comparison rows
     plus a corpus-level agreement summary. No external request is made.
+
+    On validation failure, the 400 body carries both the human message and
+    the parser diagnostics so the UI can show rejected_lines, counts, etc.
     """
     try:
         return coco_compare.build_comparison(req.paste)
     except coco_compare.CocoCompareError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(
+            status_code=400,
+            detail={"message": str(e), "diagnostics": e.diagnostics},
+        )
 
 
 @app.post("/coco/compare.csv")
@@ -336,7 +342,10 @@ def coco_compare_csv_endpoint(req: CocoCompareRequest):
     try:
         comparison = coco_compare.build_comparison(req.paste)
     except coco_compare.CocoCompareError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(
+            status_code=400,
+            detail={"message": str(e), "diagnostics": e.diagnostics},
+        )
     csv_text = coco_compare.render_comparison_csv(comparison)
     out_path = storage.EXPORTS_DIR / "coco_comparison.csv"
     out_path.write_text(csv_text, encoding="utf-8")

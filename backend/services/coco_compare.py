@@ -1,50 +1,49 @@
 """
-COCO Y0 comparison service.
+COCO Y0 comparison service — strict parser for FINAL COCO OUTPUT only.
 
-After the user pastes COCO Y0 output from
-https://miau.my-x.hu/myx-free/coco/beker_y0.php into the UI, this module:
+Input contract
+--------------
+This module accepts exactly ONE of:
 
-1. Parses the pasted text (two formats supported, see below).
-2. Determines the COCO-selected variant per image_id.
-3. Compares it against the app's primary recommendation and the TOPSIS
-   pick (both already stored per-image in data/results/).
-4. Produces:
-   - per-image comparison rows (app vs TOPSIS vs COCO + agreement flags)
-   - corpus-level summary (3 pairwise agreement rates)
+    (a) Ranked list  — one object_id per line, best to worst.
+                       No numbers on the line (except inside the id itself,
+                       e.g. the "90" in "img001_jpeg_q90"). Optional leading
+                       rank prefix like "1." or "1)" is allowed.
+
+    (b) Scored list  — one object_id per line followed by exactly ONE
+                       numeric score. Higher score = better.
+
+Both formats have EXACTLY ONE object_id per line and AT MOST ONE trailing
+score value.
+
+What we reject
+--------------
+Any line with multiple numeric values after the object_id is a RANKED MATRIX
+ROW (solver input, not output). This is the exact bug reported: the user
+pasted the ranked matrix into the comparison textarea and the old parser
+silently accepted it by treating the first column's rank as a "score."
+We now reject such input with a specific error:
+
+    "This looks like COCO input (ranked matrix), not final COCO output."
+
+Other rejected shapes:
+    - attribute lists     (lines are attribute names, not object_ids)
+    - object lists alone  — technically accepted as ranked-list if they are
+                            sorted best-to-worst by the solver; indistinguishable
+                            from the output shape so we can't reject without
+                            more signal. The user's textarea helper text tells
+                            them what to paste.
+    - mixed/garbage       — reported via `rejected_lines` diagnostics.
 
 External-tool boundary
 ----------------------
-This module does NOT call MIAU. It only parses text the user pastes.
-The COCO Y0 site remains a manual external solver in the workflow.
-
-Supported paste formats
------------------------
-The MIAU output format is not standardized — the student pastes whatever
-the site returns. This parser accepts two shapes and tries them in order:
-
-  Format A — scored: each line has an object_id and a numeric score,
-             separated by tab/whitespace/comma. Higher score = better.
-             Example:
-                 img001_avif_q50    0.973
-                 img001_jpeg_q90    0.541
-                 ...
-
-  Format B — pre-ranked list: each line contains exactly one object_id
-             (any leading rank number, separator chars, or surrounding
-             whitespace are stripped). Order = best to worst.
-             Example:
-                 1. img001_avif_q50
-                 2. img001_jpeg_q90
-                 ...
-
-Format A wins if any line has a parseable numeric score; otherwise B.
-
-If the actual MIAU output uses a different format, change `parse_coco_paste`
-— it's the only place that handles input shape.
+No network calls. This parses text the user pastes.
 """
 
 from __future__ import annotations
 
+import io
+import csv
 import re
 from typing import Dict, List, Optional, Tuple
 
@@ -52,137 +51,212 @@ from backend.services import storage
 
 
 class CocoCompareError(RuntimeError):
-    pass
+    """Parser/comparison failure. Carries an optional diagnostics dict."""
+
+    def __init__(self, message: str, diagnostics: Optional[Dict] = None):
+        super().__init__(message)
+        self.diagnostics = diagnostics or {}
 
 
-# Object IDs from this app look like "img001_jpeg_q90". Allow letters,
-# digits, underscores. Conservative pattern — won't match arbitrary text.
 _OBJECT_ID_RE = re.compile(r"\b(img\d+_[a-z]+_q\d+)\b", re.IGNORECASE)
 
+# Matches any number token on the line (int, float, scientific).
+_NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?(?:[eE]-?\d+)?")
+
+# Leading "1.", "1)", "1 " rank prefixes the user may paste with a list.
+# Must consume the whole prefix so the residual can't be mistaken for a score.
+_RANK_PREFIX_RE = re.compile(r"^\s*\d+[\.\)]\s+")
+
 
 # ---------------------------------------------------------------------------
-# Parsing
+# Line classification
 # ---------------------------------------------------------------------------
 
-def _try_parse_scored(text: str) -> Optional[List[Tuple[str, float]]]:
+def _classify_line(raw: str) -> Dict:
     """
-    Parse Format A. Returns [(object_id, score), ...] sorted by score
-    descending, or None if no line had a numeric score.
-
-    A line counts as "scored" only if a numeric value appears AFTER the
-    object id. This avoids treating leading rank prefixes like "1." (in
-    "1. img001_avif_q50") as scores.
+    Return a dict describing one input line:
+        {
+          "raw": str,
+          "stripped": str,
+          "object_id": str | None,
+          "trailing_numbers": [float, ...],   # numbers AFTER the object_id
+          "kind": "empty" | "comment" | "no_id" |
+                  "ranked_list" | "scored" | "matrix_row",
+        }
     """
-    pairs: List[Tuple[str, float]] = []
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        oid_match = _OBJECT_ID_RE.search(line)
-        if not oid_match:
-            continue
-        # Look for a number on the SAME line, AFTER the object id ends.
-        after = line[oid_match.end():]
-        num_match = re.search(r"-?\d+(?:\.\d+)?(?:[eE]-?\d+)?", after)
-        if num_match:
-            try:
-                pairs.append((oid_match.group(1), float(num_match.group(0))))
-            except ValueError:
-                continue
-    if not pairs:
-        return None
-    pairs.sort(key=lambda p: p[1], reverse=True)
-    return pairs
+    stripped = raw.strip()
+    if not stripped:
+        return {"raw": raw, "stripped": "", "kind": "empty",
+                "object_id": None, "trailing_numbers": []}
+    if stripped.startswith("#"):
+        return {"raw": raw, "stripped": stripped, "kind": "comment",
+                "object_id": None, "trailing_numbers": []}
+
+    # Strip a leading rank prefix ("1. ", "1) ", "1 ") if present — it is
+    # NOT a score and must not influence classification.
+    no_prefix = _RANK_PREFIX_RE.sub("", stripped, count=1)
+
+    oid_match = _OBJECT_ID_RE.search(no_prefix)
+    if not oid_match:
+        return {"raw": raw, "stripped": stripped, "kind": "no_id",
+                "object_id": None, "trailing_numbers": []}
+
+    after = no_prefix[oid_match.end():]
+    numbers = [float(m.group(0)) for m in _NUMBER_RE.finditer(after)]
+
+    if len(numbers) == 0:
+        kind = "ranked_list"
+    elif len(numbers) == 1:
+        kind = "scored"
+    else:
+        # Two or more numbers after the id → this is a ranked-matrix row.
+        # Exactly the shape the old parser accepted by accident.
+        kind = "matrix_row"
+
+    return {
+        "raw": raw,
+        "stripped": stripped,
+        "kind": kind,
+        "object_id": oid_match.group(1),
+        "trailing_numbers": numbers,
+    }
 
 
-def _try_parse_ranked_list(text: str) -> List[str]:
-    """
-    Parse Format B. Returns ordered list of object_ids, best → worst.
-    Each non-empty line contributes its first object_id match.
-    """
-    out: List[str] = []
-    seen = set()
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        m = _OBJECT_ID_RE.search(line)
-        if not m:
-            continue
-        oid = m.group(1)
-        if oid in seen:
-            continue
-        seen.add(oid)
-        out.append(oid)
-    return out
-
+# ---------------------------------------------------------------------------
+# Public: parse
+# ---------------------------------------------------------------------------
 
 def parse_coco_paste(text: str) -> Dict:
     """
-    Try Format A first (scored), fall back to Format B (ranked list).
+    Strict parser. Returns:
 
-    Returns:
         {
           "format_detected": "scored" | "ranked_list",
           "ranking": [object_id, ...],     # best → worst
-          "scores":  {object_id: score}    # only for scored format
+          "scores":  {object_id: score}    # scored format only
+          "diagnostics": {
+              "n_matched": int,
+              "n_rejected": int,
+              "rejected_lines": [{"line_no": int, "reason": str,
+                                   "text": str}, ...],
+          }
         }
 
-    Raises CocoCompareError on empty/unparseable input.
+    Raises CocoCompareError with .diagnostics populated on any of:
+        - empty input
+        - no object_ids anywhere
+        - one or more lines look like a ranked-matrix row
+        - mixed "scored" + "ranked_list" (ambiguous)
     """
     if not text or not text.strip():
-        raise CocoCompareError("Pasted text is empty.")
+        raise CocoCompareError("Pasted text is empty.",
+                               {"n_matched": 0, "n_rejected": 0,
+                                "rejected_lines": []})
 
-    scored = _try_parse_scored(text)
-    if scored:
+    lines = [_classify_line(raw) for raw in text.splitlines()]
+    rejected: List[Dict] = []
+    matrix_rows: List[Dict] = []
+    scored_rows: List[Dict] = []
+    ranked_rows: List[Dict] = []
+
+    for i, info in enumerate(lines, start=1):
+        if info["kind"] in ("empty", "comment"):
+            continue
+        if info["kind"] == "no_id":
+            rejected.append({
+                "line_no": i,
+                "reason": "no object_id (expected something like 'img001_jpeg_q90')",
+                "text": info["stripped"][:120],
+            })
+            continue
+        if info["kind"] == "matrix_row":
+            matrix_rows.append(info)
+            rejected.append({
+                "line_no": i,
+                "reason": f"looks like a ranked-matrix row "
+                          f"({len(info['trailing_numbers'])} numeric columns)",
+                "text": info["stripped"][:120],
+            })
+            continue
+        if info["kind"] == "scored":
+            scored_rows.append(info)
+        elif info["kind"] == "ranked_list":
+            ranked_rows.append(info)
+
+    diagnostics = {
+        "n_matched": len(scored_rows) + len(ranked_rows),
+        "n_rejected": len(rejected),
+        "rejected_lines": rejected,
+    }
+
+    # --- Hard rejections ---
+    if matrix_rows:
+        raise CocoCompareError(
+            "This looks like COCO input (ranked matrix), not final COCO "
+            "output. Each line should have one object_id, with at most one "
+            "numeric score after it. Paste the result of the external solver, "
+            "not the matrix you sent to it.",
+            diagnostics,
+        )
+
+    if not scored_rows and not ranked_rows:
+        raise CocoCompareError(
+            "Could not find any valid object_id lines. Expected 'img...' "
+            "on each non-comment line.",
+            diagnostics,
+        )
+
+    if scored_rows and ranked_rows:
+        # One format at a time. Mixing is almost always an accidental paste.
+        raise CocoCompareError(
+            f"Mixed line shapes detected "
+            f"({len(scored_rows)} scored, {len(ranked_rows)} unscored). "
+            f"Every non-comment line must follow the same format.",
+            diagnostics,
+        )
+
+    # --- Build the validated ranking ---
+    if scored_rows:
+        pairs = [(r["object_id"], r["trailing_numbers"][0]) for r in scored_rows]
+        pairs.sort(key=lambda p: p[1], reverse=True)  # higher = better
         return {
             "format_detected": "scored",
-            "ranking": [oid for oid, _ in scored],
-            "scores": {oid: s for oid, s in scored},
+            "ranking": [oid for oid, _ in pairs],
+            "scores": {oid: s for oid, s in pairs},
+            "diagnostics": diagnostics,
         }
 
-    ranked = _try_parse_ranked_list(text)
-    if ranked:
-        return {
-            "format_detected": "ranked_list",
-            "ranking": ranked,
-            "scores": {},
-        }
-
-    raise CocoCompareError(
-        "Could not find any object IDs in the pasted text. Object IDs "
-        "look like 'img001_jpeg_q90'. Make sure you pasted the COCO Y0 "
-        "output, not the input matrix."
-    )
+    # ranked_list path — preserve input order, dedup
+    seen = set()
+    ranking: List[str] = []
+    for r in ranked_rows:
+        oid = r["object_id"]
+        if oid in seen:
+            continue
+        seen.add(oid)
+        ranking.append(oid)
+    return {
+        "format_detected": "ranked_list",
+        "ranking": ranking,
+        "scores": {},
+        "diagnostics": diagnostics,
+    }
 
 
 # ---------------------------------------------------------------------------
 # Comparison
 # ---------------------------------------------------------------------------
 
-def _coco_pick_per_image(coco_ranking: List[str]) -> Dict[str, str]:
-    """
-    For each image_id present in the ranking, return the highest-ranked
-    object_id (= COCO pick). image_id is the prefix before the first
-    underscore: "img001_avif_q50" → "img001".
-    """
+def _coco_pick_per_image(ranking: List[str]) -> Dict[str, str]:
     picks: Dict[str, str] = {}
-    for oid in coco_ranking:
+    for oid in ranking:
         prefix = oid.split("_", 1)[0]
-        if prefix not in picks:        # first occurrence wins (best rank)
+        if prefix not in picks:
             picks[prefix] = oid
     return picks
 
 
 def _persisted_picks() -> Dict[str, Dict]:
-    """
-    Load every persisted result document and return:
-        {image_id: {
-            "app_pick": object_id,
-            "topsis_pick": object_id,
-            "primary_rule_used": str,
-        }}
-    """
     out: Dict[str, Dict] = {}
     for doc in storage.iter_all_results():
         image_id = doc["image_id"]
@@ -198,36 +272,8 @@ def _persisted_picks() -> Dict[str, Dict]:
 
 def build_comparison(coco_paste_text: str) -> Dict:
     """
-    Top-level entry point. Combines the parsed COCO output with the stored
-    app + TOPSIS picks for every image and returns a structured payload.
-
-    Returns:
-        {
-          "format_detected": "scored" | "ranked_list",
-          "rows": [
-            {
-              "image_id": "img001",
-              "app_pick": "img001_jpeg_q90",
-              "topsis_pick": "img001_avif_q50",
-              "coco_pick":  "img001_webp_q80",
-              "app_vs_topsis_agree": False,
-              "app_vs_coco_agree":   False,
-              "topsis_vs_coco_agree": False,
-              "primary_rule_used": "pareto_ssim>=0.95_min_size",
-              "coco_pick_present_in_app_corpus": True,
-            }, ...
-          ],
-          "summary": {
-            "n_images_in_corpus":      N_corpus,
-            "n_images_in_coco_paste":  N_coco,
-            "n_images_compared":       N_compared,
-            "agree_app_vs_topsis":     {"count": int, "rate": float},
-            "agree_app_vs_coco":       {"count": int, "rate": float},
-            "agree_topsis_vs_coco":    {"count": int, "rate": float},
-            "coco_picks_outside_corpus": [object_id, ...],
-          },
-          "warnings": [str, ...],
-        }
+    Validates the paste (strictly) and produces per-image + corpus-level
+    comparison. Raises CocoCompareError with diagnostics if validation fails.
     """
     parsed = parse_coco_paste(coco_paste_text)
     coco_picks = _coco_pick_per_image(parsed["ranking"])
@@ -235,30 +281,25 @@ def build_comparison(coco_paste_text: str) -> Dict:
 
     if not persisted:
         raise CocoCompareError(
-            "No processed images found in this app instance. Process at "
-            "least one image before comparing COCO Y0 results."
+            "No processed images in this app instance. Upload at least one "
+            "image before comparing.",
+            parsed["diagnostics"],
         )
 
     warnings: List[str] = []
 
-    # Sanity check: are any COCO picks for images that don't exist locally?
-    outside = sorted(
-        oid for img, oid in coco_picks.items() if img not in persisted
-    )
+    outside = sorted(oid for img, oid in coco_picks.items() if img not in persisted)
     if outside:
         warnings.append(
-            f"COCO output references {len(outside)} image_id(s) not in "
-            f"this app's corpus: {outside[:5]}{'...' if len(outside) > 5 else ''}. "
-            f"They are excluded from the comparison."
+            f"COCO output references {len(outside)} image_id(s) not in the "
+            f"local corpus: {outside[:5]}{'...' if len(outside) > 5 else ''}."
         )
 
-    # And: are any local images missing from the COCO paste?
-    missing_from_coco = sorted(set(persisted) - set(coco_picks))
-    if missing_from_coco:
+    missing = sorted(set(persisted) - set(coco_picks))
+    if missing:
         warnings.append(
-            f"{len(missing_from_coco)} image(s) in the local corpus have "
-            f"no COCO pick in the paste: {missing_from_coco[:5]}"
-            f"{'...' if len(missing_from_coco) > 5 else ''}."
+            f"{len(missing)} image(s) in the local corpus have no COCO pick "
+            f"in the paste: {missing[:5]}{'...' if len(missing) > 5 else ''}."
         )
 
     rows: List[Dict] = []
@@ -266,7 +307,6 @@ def build_comparison(coco_paste_text: str) -> Dict:
     for image_id in sorted(persisted):
         coco_pick = coco_picks.get(image_id, "")
         if not coco_pick:
-            # Skip — image absent from paste; cannot compare COCO column.
             continue
         app_pick = persisted[image_id]["app_pick"]
         topsis_pick = persisted[image_id]["topsis_pick"]
@@ -283,7 +323,7 @@ def build_comparison(coco_paste_text: str) -> Dict:
             "topsis_pick": topsis_pick,
             "coco_pick": coco_pick,
             "app_vs_topsis_agree": app_vs_topsis,
-            "app_vs_coco_agree":   app_vs_coco,
+            "app_vs_coco_agree": app_vs_coco,
             "topsis_vs_coco_agree": topsis_vs_coco,
             "primary_rule_used": persisted[image_id]["primary_rule_used"],
             "coco_pick_present_in_app_corpus": True,
@@ -294,6 +334,7 @@ def build_comparison(coco_paste_text: str) -> Dict:
 
     return {
         "format_detected": parsed["format_detected"],
+        "diagnostics": parsed["diagnostics"],
         "rows": rows,
         "summary": {
             "n_images_in_corpus":     len(persisted),
@@ -309,7 +350,7 @@ def build_comparison(coco_paste_text: str) -> Dict:
 
 
 # ---------------------------------------------------------------------------
-# CSV export of the comparison
+# CSV export
 # ---------------------------------------------------------------------------
 
 COMPARISON_COLUMNS: List[str] = [
@@ -325,8 +366,6 @@ COMPARISON_COLUMNS: List[str] = [
 
 
 def render_comparison_csv(comparison: Dict) -> str:
-    """Render the rows as CSV text (header + per-image rows)."""
-    import io, csv
     buf = io.StringIO()
     w = csv.DictWriter(buf, fieldnames=COMPARISON_COLUMNS, extrasaction="ignore")
     w.writeheader()

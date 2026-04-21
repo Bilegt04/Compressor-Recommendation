@@ -1,19 +1,18 @@
 // ===========================================================================
-// Image Compression Recommender — frontend controller
+// Image Compression Recommender — frontend
 //
-// The native <input type="file"> is visually hidden. All user-visible text
-// on the upload control is owned by this page, in English, regardless of
-// the browser's OS locale. Interaction goes through the custom dropzone:
-//   - click anywhere on the dropzone or the "Select Image" button
-//   - drag a file onto the dropzone
-//   - keyboard Enter/Space on the focused dropzone
+// Upload architecture:
+// - A <label id="dropzone"> wraps a visually-hidden <input type="file">.
+//   Clicking anywhere on the label natively opens the file picker
+//   (via the for= attribute). This gives us one control, not two.
+// - Dragged files are stored in a module-level variable `currentFile`
+//   instead of being round-tripped through `input.files`. DataTransfer's
+//   cross-browser reliability is poor, so we submit via FormData.append
+//   using whatever is in currentFile. Source of truth = JS state.
 // ===========================================================================
 
-// UI strings — single source of truth. Everything shown to the user must
-// come from here, never from a browser-localized element.
 const STRINGS = {
-  noFileSelected: "No file selected",
-  dropPrompt: "Drop an image here, or click to browse",
+  dropPrompt: "Drag & drop image here or click to upload",
   dropActive: "Release to add the image",
   analyzing: "Analyzing — this usually takes 2 to 10 seconds…",
   done: "Done.",
@@ -32,11 +31,14 @@ const ACCEPTED_EXT = /\.(jpe?g|png|webp)$/i;
 
 // --- DOM refs ---
 const form = document.getElementById("upload-form");
-const fileInput = document.getElementById("file");
+const fileInput = document.getElementById("file-input");
 const dropzone = document.getElementById("dropzone");
-const selectBtn = document.getElementById("select-btn");
-const filenameDisplay = document.getElementById("filename-display");
-const dropzonePrimary = document.getElementById("dropzone-primary");
+const dropzoneEmpty = document.getElementById("dropzone-empty");
+const dropzoneSelected = document.getElementById("dropzone-selected");
+const previewThumb = document.getElementById("preview-thumb");
+const selectedFilename = document.getElementById("selected-filename");
+const selectedMeta = document.getElementById("selected-meta");
+const removeBtn = document.getElementById("remove-btn");
 const submitBtn = document.getElementById("submit-btn");
 const statusEl = document.getElementById("status");
 
@@ -58,16 +60,19 @@ const variantsGrid = document.getElementById("variants-grid");
 const devPanel = document.getElementById("dev-panel");
 const devExports = document.getElementById("dev-exports");
 
+// Upload state — the ONE source of truth for the selected file.
+let currentFile = null;
+let currentThumbUrl = null;
 let configFlags = { oam_features_enabled: false, max_upload_bytes: 0 };
 
 // ===========================================================================
-// Bootstrap — fetch config to decide whether to show the dev panel
+// Bootstrap
 // ===========================================================================
 (async function init() {
   try {
     const r = await fetch("/config");
     if (r.ok) configFlags = await r.json();
-  } catch (_) { /* defaults are fine */ }
+  } catch (_) { /* defaults OK */ }
 
   if (configFlags.oam_features_enabled) {
     devPanel.hidden = false;
@@ -78,14 +83,10 @@ let configFlags = { oam_features_enabled: false, max_upload_bytes: 0 };
       <a href="/exports/oam.csv?oam_variant=extended" target="_blank" rel="noopener">oam.csv (extended)</a>
       <a href="/exports/analysis.csv" target="_blank" rel="noopener">analysis.csv</a>
     `;
-
-    // COCO Y0 panel — same gating.
-    document.getElementById("coco-panel").hidden = false;
-    initCocoPanel();
   }
 
-  // Initial label — guarantees English even before any interaction.
-  filenameDisplay.textContent = STRINGS.noFileSelected;
+  initCocoPanel();
+  initCocoComparePanel();
 })();
 
 // ===========================================================================
@@ -104,10 +105,14 @@ function formatPercent(v) {
   if (typeof v !== "number") return "—";
   return v.toFixed(1) + "%";
 }
+function formatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
 
 function isAcceptedFile(file) {
   if (!file) return false;
-  // Prefer MIME type; fall back to extension if the browser reports empty/odd.
   if (file.type && ACCEPTED_MIME.has(file.type)) return true;
   return ACCEPTED_EXT.test(file.name || "");
 }
@@ -121,94 +126,111 @@ function validateFileSize(file) {
   return null;
 }
 
-// Set a single file on the <input> via DataTransfer so form submission
-// still sends it the normal way. Supported in all modern browsers.
-function attachFileToInput(file) {
-  const dt = new DataTransfer();
-  dt.items.add(file);
-  fileInput.files = dt.files;
-}
-
-function applyFileSelection(file) {
+// ===========================================================================
+// File selection — single code path for drop, click, and picker change
+// ===========================================================================
+function acceptFile(file) {
   if (!isAcceptedFile(file)) {
     setStatus(STRINGS.errors.wrongType, "error");
-    clearFileSelection();
+    resetFile();
     return false;
   }
   const sizeErr = validateFileSize(file);
   if (sizeErr) {
     setStatus(sizeErr, "error");
-    clearFileSelection();
+    resetFile();
     return false;
   }
 
-  attachFileToInput(file);
-  filenameDisplay.textContent = file.name;
+  // Revoke any previous thumbnail to free memory.
+  if (currentThumbUrl) URL.revokeObjectURL(currentThumbUrl);
+
+  currentFile = file;
+  currentThumbUrl = URL.createObjectURL(file);
+
+  previewThumb.src = currentThumbUrl;
+  previewThumb.alt = `Preview of ${file.name}`;
+  selectedFilename.textContent = file.name;
+  selectedMeta.textContent = formatBytes(file.size);
+
+  dropzoneEmpty.hidden = true;
+  dropzoneSelected.hidden = false;
   dropzone.classList.add("has-file");
   submitBtn.disabled = false;
   setStatus("", "");
   return true;
 }
 
-function clearFileSelection() {
-  fileInput.value = "";
-  filenameDisplay.textContent = STRINGS.noFileSelected;
+function resetFile() {
+  if (currentThumbUrl) {
+    URL.revokeObjectURL(currentThumbUrl);
+    currentThumbUrl = null;
+  }
+  currentFile = null;
+  fileInput.value = "";        // clear native picker state too
+  previewThumb.src = "";
+  selectedFilename.textContent = "";
+  selectedMeta.textContent = "";
+  dropzoneEmpty.hidden = false;
+  dropzoneSelected.hidden = true;
   dropzone.classList.remove("has-file");
   submitBtn.disabled = true;
 }
 
-// ===========================================================================
-// Dropzone interactions
-// ===========================================================================
-
-// Clicking the dropzone or the Select Image button opens the file picker.
-dropzone.addEventListener("click", (e) => {
-  // Avoid double-trigger when clicking the nested button (which also opens
-  // the picker via its own handler below).
-  if (e.target === selectBtn) return;
-  fileInput.click();
-});
-selectBtn.addEventListener("click", (e) => {
-  e.stopPropagation();
-  fileInput.click();
-});
-
-// Keyboard — Enter/Space on the focused dropzone opens the picker.
-dropzone.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" || e.key === " ") {
-    e.preventDefault();
-    fileInput.click();
-  }
-});
-
-// Native change event — user picked a file via the picker.
+// Picker path — user clicked the dropzone, browser opened the picker.
 fileInput.addEventListener("change", () => {
   const file = fileInput.files && fileInput.files[0];
-  if (file) applyFileSelection(file);
+  if (file) acceptFile(file);
 });
 
-// --- Drag and drop ---
+// Remove button — explicit reset.
+removeBtn.addEventListener("click", (e) => {
+  // Stop the label from re-opening the picker on the same click.
+  e.preventDefault();
+  e.stopPropagation();
+  resetFile();
+});
+
+// ===========================================================================
+// Drag & drop
+// ===========================================================================
+
+// Stop the browser's default "navigate to file" when a file is dropped
+// anywhere OUTSIDE the dropzone. Without this, a missed drop loads the
+// image full-screen and wipes the page. Must be non-passive to preventDefault.
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("drop", (e) => e.preventDefault());
+
+function setDragActive(active) {
+  dropzone.classList.toggle("is-dragover", active);
+  const primary = dropzoneEmpty.querySelector(".dropzone-primary");
+  if (primary) {
+    primary.textContent = active ? STRINGS.dropActive : STRINGS.dropPrompt;
+  }
+}
+
+// Drag enters OR moves over the dropzone — keep highlight on, prevent
+// default so `drop` fires.
 ["dragenter", "dragover"].forEach(evt => {
   dropzone.addEventListener(evt, (e) => {
     e.preventDefault();
     e.stopPropagation();
-    dropzone.classList.add("is-dragover");
-    dropzonePrimary.textContent = STRINGS.dropActive;
+    setDragActive(true);
   });
 });
-["dragleave", "dragend"].forEach(evt => {
-  dropzone.addEventListener(evt, (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dropzone.classList.remove("is-dragover");
-    dropzonePrimary.textContent = STRINGS.dropPrompt;
-  });
+
+// Drag leaves. Note: dragleave fires when crossing ANY child element, so
+// we only clear the highlight if the pointer actually leaves the dropzone
+// (relatedTarget is outside, or null).
+dropzone.addEventListener("dragleave", (e) => {
+  if (!dropzone.contains(e.relatedTarget)) setDragActive(false);
 });
+dropzone.addEventListener("dragend", () => setDragActive(false));
+
 dropzone.addEventListener("drop", (e) => {
   e.preventDefault();
   e.stopPropagation();
-  dropzone.classList.remove("is-dragover");
-  dropzonePrimary.textContent = STRINGS.dropPrompt;
+  setDragActive(false);
 
   const files = e.dataTransfer && e.dataTransfer.files;
   if (!files || files.length === 0) return;
@@ -216,16 +238,11 @@ dropzone.addEventListener("drop", (e) => {
     setStatus(STRINGS.errors.tooManyFiles, "error");
     return;
   }
-  applyFileSelection(files[0]);
+  acceptFile(files[0]);
 });
 
-// Prevent the window from navigating away when a file is dropped outside
-// the dropzone (default browser behavior is to open the file).
-window.addEventListener("dragover", (e) => e.preventDefault());
-window.addEventListener("drop", (e) => e.preventDefault());
-
 // ===========================================================================
-// Rendering
+// Rendering results
 // ===========================================================================
 function renderRecommendation(data) {
   const rec = data.recommendation;
@@ -265,7 +282,6 @@ function renderPreview(data) {
 
 function renderVariants(data) {
   variantsGrid.innerHTML = "";
-
   const sorted = [...data.variants].sort((a, b) => {
     if (a.is_recommended !== b.is_recommended) return a.is_recommended ? -1 : 1;
     if (a.format_name !== b.format_name) return a.format_name.localeCompare(b.format_name);
@@ -287,22 +303,10 @@ function renderVariants(data) {
 
     card.innerHTML = `
       <div class="format-title">${v.format_name}, quality ${v.encoder_quality_param}${badges.join("")}</div>
-      <div class="stat-row">
-        <span class="stat-label">File size</span>
-        <span class="stat-value">${formatKb(v.compressed_size_kb)}</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-label">Saved</span>
-        <span class="stat-value">${formatPercent(v.percent_saved)}</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-label" title="Peak signal-to-noise ratio — a technical quality measure. Higher is better.">PSNR</span>
-        <span class="stat-value">${typeof v.psnr === "number" ? v.psnr.toFixed(2) + " dB" : "—"}</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-label" title="Structural similarity to the original. 1.0 means identical.">SSIM</span>
-        <span class="stat-value">${typeof v.ssim === "number" ? v.ssim.toFixed(4) : "—"}</span>
-      </div>
+      <div class="stat-row"><span class="stat-label">File size</span><span class="stat-value">${formatKb(v.compressed_size_kb)}</span></div>
+      <div class="stat-row"><span class="stat-label">Saved</span><span class="stat-value">${formatPercent(v.percent_saved)}</span></div>
+      <div class="stat-row"><span class="stat-label" title="Peak signal-to-noise ratio — a technical quality measure. Higher is better.">PSNR</span><span class="stat-value">${typeof v.psnr === "number" ? v.psnr.toFixed(2) + " dB" : "—"}</span></div>
+      <div class="stat-row"><span class="stat-label" title="Structural similarity to the original. 1.0 means identical.">SSIM</span><span class="stat-value">${typeof v.ssim === "number" ? v.ssim.toFixed(4) : "—"}</span></div>
     `;
     variantsGrid.appendChild(card);
   }
@@ -322,8 +326,7 @@ function renderAll(data) {
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
 
-  const file = fileInput.files && fileInput.files[0];
-  if (!file) {
+  if (!currentFile) {
     setStatus(STRINGS.errors.noFile, "error");
     return;
   }
@@ -332,7 +335,7 @@ form.addEventListener("submit", async (e) => {
   setStatus(STRINGS.analyzing, "loading");
 
   const fd = new FormData();
-  fd.append("file", file);
+  fd.append("file", currentFile, currentFile.name);
 
   try {
     const resp = await fetch("/upload", { method: "POST", body: fd });
@@ -350,39 +353,34 @@ form.addEventListener("submit", async (e) => {
   } catch (_) {
     setStatus(STRINGS.errors.network, "error");
   } finally {
-    submitBtn.disabled = !(fileInput.files && fileInput.files[0]);
+    submitBtn.disabled = !currentFile;
   }
 });
 
 // ===========================================================================
-// COCO Y0 panel (gated by ENABLE_OAM_FEATURES)
-//
-// The external MIAU COCO Y0 solver
-// (https://miau.my-x.hu/myx-free/coco/beker_y0.php) is a manual external
-// tool. This panel produces text the user copies by hand. There is no
-// automated submission and no scraping of the external site.
+// COCO Y0 build panel
 // ===========================================================================
 function initCocoPanel() {
   const variantSel = document.getElementById("coco-variant");
   const stepInput = document.getElementById("coco-step-count");
   const buildBtn = document.getElementById("coco-build-btn");
-  const statusEl = document.getElementById("coco-status");
+  const statusEl2 = document.getElementById("coco-status");
   const outputBox = document.getElementById("coco-output");
   const summaryEl = document.getElementById("coco-summary");
   const matrixEl = document.getElementById("coco-matrix");
   const objectsEl = document.getElementById("coco-objects");
   const attributesEl = document.getElementById("coco-attributes");
-  const downloadBtn = document.getElementById("coco-download-btn");
+  const cocoDownloadBtn = document.getElementById("coco-download-btn");
 
   function setCocoStatus(text, kind) {
-    statusEl.textContent = text || "";
-    statusEl.className = "status-line" + (kind ? " " + kind : "");
+    statusEl2.textContent = text || "";
+    statusEl2.className = "status-line" + (kind ? " " + kind : "");
   }
 
   function updateDownloadHref() {
     const v = encodeURIComponent(variantSel.value);
     const s = encodeURIComponent(stepInput.value || "0");
-    downloadBtn.href = `/coco/download?oam_variant=${v}&step_count=${s}`;
+    cocoDownloadBtn.href = `/coco/download?oam_variant=${v}&step_count=${s}`;
   }
 
   async function buildPreview() {
@@ -418,7 +416,6 @@ function initCocoPanel() {
   variantSel.addEventListener("change", () => { if (!outputBox.hidden) buildPreview(); });
   stepInput.addEventListener("change", () => { if (!outputBox.hidden) buildPreview(); });
 
-  // Copy buttons — wire each to its target <pre>.
   document.querySelectorAll(".copy-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
       const targetId = btn.getAttribute("data-target");
@@ -435,8 +432,6 @@ function initCocoPanel() {
           btn.classList.remove("copied");
         }, 1500);
       } catch (_) {
-        // Fallback for browsers without clipboard API permission
-        // (e.g., insecure context). Select the text manually.
         const range = document.createRange();
         range.selectNodeContents(target);
         const sel = window.getSelection();
@@ -449,4 +444,129 @@ function initCocoPanel() {
   });
 
   updateDownloadHref();
+}
+
+// ===========================================================================
+// COCO Y0 comparison panel
+// ===========================================================================
+function initCocoComparePanel() {
+  const pasteEl = document.getElementById("coco-paste");
+  const runBtn = document.getElementById("coco-compare-btn");
+  const csvLink = document.getElementById("coco-compare-csv-btn");
+  const statusEl3 = document.getElementById("coco-compare-status");
+  const outputEl = document.getElementById("coco-compare-output");
+  const summaryEl = document.getElementById("coco-compare-summary");
+  const tableBody = document.querySelector("#coco-compare-table tbody");
+  const warningsEl = document.getElementById("coco-compare-warnings");
+
+  function setCmpStatus(text, kind) {
+    statusEl3.textContent = text || "";
+    statusEl3.className = "status-line" + (kind ? " " + kind : "");
+  }
+
+  function cell(value, agree) {
+    const td = document.createElement("td");
+    if (agree === true) { td.className = "agree-yes"; td.textContent = "✓"; }
+    else if (agree === false) { td.className = "agree-no"; td.textContent = "✗"; }
+    else { td.textContent = value; }
+    return td;
+  }
+
+  function renderComparison(data) {
+    const s = data.summary;
+    summaryEl.innerHTML =
+      `Format detected: <strong>${data.format_detected}</strong>. ` +
+      `Compared <strong>${s.n_images_compared}</strong> of ` +
+      `${s.n_images_in_corpus} corpus images ` +
+      `(${s.n_images_in_coco_paste} present in paste).<br>` +
+      `Agreement rates: ` +
+      `App vs TOPSIS <strong>${s.agree_app_vs_topsis.rate_pct}%</strong> ` +
+      `(${s.agree_app_vs_topsis.count}/${s.n_images_compared}) · ` +
+      `App vs COCO <strong>${s.agree_app_vs_coco.rate_pct}%</strong> ` +
+      `(${s.agree_app_vs_coco.count}/${s.n_images_compared}) · ` +
+      `TOPSIS vs COCO <strong>${s.agree_topsis_vs_coco.rate_pct}%</strong> ` +
+      `(${s.agree_topsis_vs_coco.count}/${s.n_images_compared})`;
+
+    tableBody.innerHTML = "";
+    for (const r of data.rows) {
+      const tr = document.createElement("tr");
+      tr.appendChild(cell(r.image_id));
+      tr.appendChild(cell(r.app_pick));
+      tr.appendChild(cell(r.topsis_pick));
+      tr.appendChild(cell(r.coco_pick));
+      tr.appendChild(cell(null, r.app_vs_topsis_agree));
+      tr.appendChild(cell(null, r.app_vs_coco_agree));
+      tr.appendChild(cell(null, r.topsis_vs_coco_agree));
+      tableBody.appendChild(tr);
+    }
+
+    warningsEl.innerHTML = "";
+    if (data.warnings && data.warnings.length) {
+      const ul = document.createElement("ul");
+      data.warnings.forEach(w => {
+        const li = document.createElement("li");
+        li.textContent = w;
+        ul.appendChild(li);
+      });
+      warningsEl.appendChild(document.createTextNode("Warnings:"));
+      warningsEl.appendChild(ul);
+      warningsEl.style.display = "";
+    } else {
+      warningsEl.style.display = "none";
+    }
+    outputEl.hidden = false;
+  }
+
+  async function runCompare() {
+    const paste = pasteEl.value || "";
+    if (!paste.trim()) {
+      setCmpStatus("Paste the COCO Y0 output first.", "error");
+      return;
+    }
+    setCmpStatus("Comparing…", "loading");
+    csvLink.style.display = "none";
+
+    try {
+      const r = await fetch("/coco/compare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paste }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        setCmpStatus(err.detail || `Error (${r.status}).`, "error");
+        return;
+      }
+      const data = await r.json();
+      renderComparison(data);
+
+      csvLink.style.display = "";
+      csvLink.textContent = "Download comparison as CSV";
+      csvLink.href = "#";
+      csvLink.onclick = async (e) => {
+        e.preventDefault();
+        const csvResp = await fetch("/coco/compare.csv", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ paste }),
+        });
+        if (!csvResp.ok) return;
+        const blob = await csvResp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "coco_comparison.csv";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      };
+
+      setCmpStatus("Done.", "");
+    } catch (_) {
+      setCmpStatus(STRINGS.errors.network, "error");
+    }
+  }
+
+  runBtn.addEventListener("click", runCompare);
 }

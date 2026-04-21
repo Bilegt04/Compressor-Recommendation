@@ -21,7 +21,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 # Feature flag: enable thesis/OAM routes and UI panels.
 # Default False for the user-facing test build.
 # Set ENABLE_OAM_FEATURES=true to re-enable in dev / thesis mode.
-ENABLE_OAM_FEATURES: bool = _env_bool("ENABLE_OAM_FEATURES", default=True)
+ENABLE_OAM_FEATURES: bool = _env_bool("ENABLE_OAM_FEATURES", default=False)
 
 # Max accepted upload size. 25 MB is plenty for image compression benchmarks
 # and rejects accidental video uploads gracefully.

@@ -1,7 +1,5 @@
 /* ===========================================================================
  * Image Compression Recommender — styles
- * All visible labels are page-controlled. The native file input is
- * visually hidden but still usable by assistive tech and form submit.
  * ========================================================================= */
 
 * { box-sizing: border-box; }
@@ -16,8 +14,7 @@ body {
   line-height: 1.5;
 }
 
-/* Standard accessible-hiding pattern. Keeps the input focusable and
-   readable by screen readers while removing it from the visual layout. */
+/* Accessible hiding — keeps the input usable by keyboard/AT, removes from flow. */
 .visually-hidden {
   position: absolute !important;
   width: 1px !important;
@@ -30,7 +27,6 @@ body {
   border: 0 !important;
 }
 
-/* --- Header --- */
 header {
   background: #1b2232;
   color: #fff;
@@ -38,18 +34,9 @@ header {
   text-align: center;
 }
 header h1 { margin: 0 0 8px; font-size: 26px; letter-spacing: -0.3px; }
-header .tagline {
-  margin: 0 auto;
-  max-width: 640px;
-  opacity: 0.85;
-  font-size: 15px;
-}
+header .tagline { margin: 0 auto; max-width: 640px; opacity: 0.85; font-size: 15px; }
 
-main {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 24px 16px 48px;
-}
+main { max-width: 960px; margin: 0 auto; padding: 24px 16px 48px; }
 
 footer {
   text-align: center;
@@ -74,54 +61,126 @@ footer a:hover { text-decoration: underline; }
 .empty-state { text-align: center; color: #888; }
 
 /* ===========================================================================
- * Custom dropzone — replaces the native file input's locale-dependent UI.
+ * Dropzone — ONE control, big hit target, clear states
  * ========================================================================= */
 .dropzone {
-  border: 2px dashed #c9ced6;
-  border-radius: 10px;
-  background: #fafbfc;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 220px;
   padding: 28px 20px;
-  text-align: center;
-  transition: background 0.15s, border-color 0.15s;
+  border: 2px dashed #c9ced6;
+  border-radius: 12px;
+  background: #fafbfc;
   cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.05s;
+  text-align: center;
   outline: none;
 }
-.dropzone:hover,
-.dropzone:focus {
+.dropzone:hover { border-color: #2a7; background: #f2faf6; }
+.dropzone:focus-within {
   border-color: #2a7;
-  background: #f2faf6;
+  box-shadow: 0 0 0 3px rgba(42, 170, 113, 0.2);
 }
 .dropzone.is-dragover {
   border-color: #2a7;
   background: #e8f6ee;
+  transform: scale(1.01);
 }
 .dropzone.has-file {
   border-style: solid;
   border-color: #2a7;
   background: #f2faf6;
+  min-height: 0;       /* shrink around preview once file chosen */
+  padding: 14px 16px;
 }
 
-.dropzone-icon {
-  color: #7a8699;
-  margin-bottom: 10px;
+.dropzone-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;   /* clicks pass through to the label */
 }
-.dropzone.has-file .dropzone-icon,
-.dropzone.is-dragover .dropzone-icon { color: #2a7; }
+.dropzone-svg { color: #7a8699; margin-bottom: 4px; }
+.dropzone.is-dragover .dropzone-svg { color: #2a7; }
 
 .dropzone-primary {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 500;
   color: #2d3550;
-  margin-bottom: 4px;
 }
-.dropzone-help {
-  font-size: 12px;
-  color: #777;
-  margin-bottom: 12px;
-}
+.dropzone-help { font-size: 12px; color: #777; }
 
-.dropzone-btn {
-  display: inline-block;
+/* Selected state: preview thumbnail + filename + remove */
+.dropzone-selected {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+}
+.preview-thumb {
+  width: 88px;
+  height: 88px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: #eee;
+  flex-shrink: 0;
+}
+.selected-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+  min-width: 0;
+  flex: 1;
+}
+.selected-filename {
+  font-size: 14px;
+  font-weight: 500;
+  color: #1b2232;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.selected-meta { font-size: 12px; color: #666; }
+
+.text-btn {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  padding: 2px 0;
+  margin-top: 4px;
+  color: #c33;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+}
+.text-btn:hover { text-decoration: underline; }
+
+/* --- Primary submit --- */
+.primary-btn {
+  display: block;
+  width: 100%;
+  background: #2a7;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 20px;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  margin-top: 14px;
+  transition: background 0.15s;
+}
+.primary-btn:hover:not(:disabled) { background: #229b66; }
+.primary-btn:disabled { background: #c8cdd3; cursor: not-allowed; }
+
+/* Secondary button used inside COCO panel */
+.secondary-btn {
   background: #fff;
   color: #1b2232;
   border: 1px solid #c9ced6;
@@ -132,39 +191,7 @@ footer a:hover { text-decoration: underline; }
   cursor: pointer;
   font-family: inherit;
 }
-.dropzone-btn:hover { border-color: #2a7; color: #2a7; }
-
-.dropzone-filename {
-  margin-top: 10px;
-  font-size: 13px;
-  color: #555;
-  word-break: break-all;
-}
-.dropzone.has-file .dropzone-filename {
-  color: #1b2232;
-  font-weight: 500;
-}
-
-/* --- Primary submit button --- */
-.primary-btn {
-  display: block;
-  width: 100%;
-  background: #2a7;
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  padding: 11px 20px;
-  font-size: 15px;
-  font-weight: 500;
-  cursor: pointer;
-  font-family: inherit;
-  margin-top: 14px;
-}
-.primary-btn:hover:not(:disabled) { background: #229b66; }
-.primary-btn:disabled {
-  background: #c8cdd3;
-  cursor: not-allowed;
-}
+.secondary-btn:hover { border-color: #2a7; color: #2a7; }
 
 /* --- Status line --- */
 .status-line {
@@ -271,11 +298,7 @@ footer a:hover { text-decoration: underline; }
   border-color: #b8d9ff;
   background: #f5fafe;
 }
-.variant-card .format-title {
-  font-size: 15px;
-  font-weight: 600;
-  margin-bottom: 6px;
-}
+.variant-card .format-title { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
 .variant-card .badge {
   display: inline-block;
   font-size: 10px;
@@ -298,28 +321,17 @@ footer a:hover { text-decoration: underline; }
 }
 .variant-card .stat-row:last-of-type { border-bottom: none; }
 .variant-card .stat-label { color: #666; }
-.variant-card .stat-value {
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-}
+.variant-card .stat-value { font-weight: 500; font-variant-numeric: tabular-nums; }
 .variant-card .stat-label[title] {
   text-decoration: underline dotted;
   cursor: help;
 }
 
 /* --- Dev panel --- */
-.dev-only {
-  border: 1px dashed #888;
-  background: #fafafa;
-}
-.dev-only a {
-  display: inline-block;
-  margin: 4px 14px 4px 0;
-  font-size: 13px;
-  color: #333;
-}
+.dev-only { border: 1px dashed #888; background: #fafafa; }
+.dev-only a { display: inline-block; margin: 4px 14px 4px 0; font-size: 13px; color: #333; }
 
-/* --- COCO Y0 panel --- */
+/* --- COCO panel --- */
 .coco-controls {
   display: flex;
   flex-wrap: wrap;
@@ -360,6 +372,7 @@ footer a:hover { text-decoration: underline; }
   justify-content: space-between;
   align-items: center;
   margin-bottom: 4px;
+  gap: 10px;
 }
 .coco-block-title {
   font-size: 12px;
@@ -388,9 +401,6 @@ footer a:hover { text-decoration: underline; }
   grid-template-columns: 1fr 1fr;
   gap: 14px;
 }
-@media (max-width: 540px) {
-  .coco-grid { grid-template-columns: 1fr; }
-}
 
 .copy-btn {
   background: #fff;
@@ -412,17 +422,97 @@ footer a:hover { text-decoration: underline; }
   align-items: center;
   margin-top: 10px;
 }
-.external-link {
-  font-size: 13px;
-  color: #2a7;
-  text-decoration: none;
-}
+.external-link { font-size: 13px; color: #2a7; text-decoration: none; }
 .external-link:hover { text-decoration: underline; }
 
-/* --- Mobile --- */
-@media (max-width: 540px) {
+#coco-paste {
+  width: 100%;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+  padding: 8px 10px;
+  border: 1px solid #c9ced6;
+  border-radius: 6px;
+  margin: 8px 0;
+  resize: vertical;
+  min-height: 120px;
+  box-sizing: border-box;
+}
+
+.table-scroll { overflow-x: auto; }
+
+.comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 14px;
+  font-size: 12px;
+}
+.comparison-table th, .comparison-table td {
+  padding: 6px 8px;
+  border: 1px solid #e0e3e8;
+  text-align: left;
+  vertical-align: middle;
+}
+.comparison-table th { background: #f4f6f9; font-weight: 600; color: #444; }
+.comparison-table td.agree-yes {
+  background: #e8f6ee;
+  color: #1e6e3f;
+  text-align: center;
+  font-weight: 600;
+}
+.comparison-table td.agree-no {
+  background: #fbecec;
+  color: #b53a3a;
+  text-align: center;
+  font-weight: 600;
+}
+.comparison-table tbody tr:hover { background: #fafbfc; }
+
+.coco-warnings {
+  margin-top: 12px;
+  padding: 8px 10px;
+  background: #fff8e6;
+  border-left: 3px solid #d89b00;
+  font-size: 12px;
+  color: #6b4d00;
+}
+.coco-warnings ul { margin: 4px 0 0; padding-left: 18px; }
+
+details > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #2d3550;
+  font-size: 14px;
+  padding: 4px 0;
+}
+details[open] > summary { margin-bottom: 8px; }
+
+/* ===========================================================================
+ * Responsive — generous touch targets on mobile
+ * ========================================================================= */
+@media (max-width: 640px) {
   header { padding: 20px 16px; }
   header h1 { font-size: 22px; }
+  main { padding: 16px 12px 40px; }
   .panel { padding: 16px; }
-  .dropzone { padding: 22px 14px; }
+
+  .dropzone {
+    min-height: 180px;
+    padding: 22px 14px;
+  }
+  .dropzone-primary { font-size: 15px; }
+
+  /* Stack the selected-state layout vertically on phones */
+  .dropzone-selected {
+    flex-direction: column;
+    text-align: center;
+  }
+  .selected-info { text-align: center; align-items: center; }
+  .text-btn { align-self: center; }
+
+  .primary-btn {
+    padding: 14px 20px;       /* bigger touch target */
+    font-size: 16px;
+  }
+
+  .coco-grid { grid-template-columns: 1fr; }
 }

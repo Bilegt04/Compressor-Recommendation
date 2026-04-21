@@ -35,6 +35,7 @@ from backend.services.metrics import MetricError
 # loads cleanly in user-test mode — but the file stays in the repo.
 from backend.services import export_service  # noqa: F401 (kept intentionally)
 from backend.services import coco_export      # noqa: F401 (kept intentionally)
+from backend.services import coco_compare     # noqa: F401 (kept intentionally)
 
 
 app = FastAPI(
@@ -269,6 +270,81 @@ def get_variant_file(image_id: str, variant_key: str):
 
 
 # ---------------------------------------------------------------------------
+# COCO Y0 export + comparison — ALWAYS available (not gated).
+#
+# Produces text the user pastes by hand into the external MIAU solver at
+# https://miau.my-x.hu/myx-free/coco/beker_y0.php and accepts the pasted
+# COCO output back for cross-method comparison. The app does NOT call MIAU.
+# ---------------------------------------------------------------------------
+
+from pydantic import BaseModel  # noqa: E402  (kept near consumer for clarity)
+
+
+class CocoCompareRequest(BaseModel):
+    paste: str
+
+
+@app.get("/coco/preview")
+def coco_preview(
+    oam_variant: str = Query("minimal", pattern="^(minimal|extended)$"),
+    step_count: int = Query(0, ge=0, le=20),
+):
+    """
+    Returns the structured payload + every rendered string. The frontend
+    uses these to populate the COCO Y0 panel and to power the Copy /
+    Download actions.
+    """
+    try:
+        return coco_export.coco_export_payload(
+            variant=oam_variant, step_count=step_count
+        )
+    except coco_export.CocoExportError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/coco/download")
+def coco_download(
+    oam_variant: str = Query("minimal", pattern="^(minimal|extended)$"),
+    step_count: int = Query(0, ge=0, le=20),
+):
+    """Writes data/exports/coco_input.txt and returns it as attachment."""
+    try:
+        p = coco_export.write_coco_input_file(
+            variant=oam_variant, step_count=step_count
+        )
+    except coco_export.CocoExportError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return FileResponse(str(p), media_type="text/plain",
+                        filename="coco_input.txt")
+
+
+@app.post("/coco/compare")
+def coco_compare_endpoint(req: CocoCompareRequest):
+    """
+    Accept pasted COCO Y0 output and return per-image comparison rows
+    plus a corpus-level agreement summary. No external request is made.
+    """
+    try:
+        return coco_compare.build_comparison(req.paste)
+    except coco_compare.CocoCompareError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/coco/compare.csv")
+def coco_compare_csv_endpoint(req: CocoCompareRequest):
+    """CSV form of the comparison, for thesis appendix."""
+    try:
+        comparison = coco_compare.build_comparison(req.paste)
+    except coco_compare.CocoCompareError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    csv_text = coco_compare.render_comparison_csv(comparison)
+    out_path = storage.EXPORTS_DIR / "coco_comparison.csv"
+    out_path.write_text(csv_text, encoding="utf-8")
+    return FileResponse(str(out_path), media_type="text/csv",
+                        filename="coco_comparison.csv")
+
+
+# ---------------------------------------------------------------------------
 # OAM / thesis routes — registered only when feature flag is on
 # ---------------------------------------------------------------------------
 
@@ -355,41 +431,3 @@ if ENABLE_OAM_FEATURES:
         except export_service.ExportError as e:
             raise HTTPException(status_code=400, detail=str(e))
         return _download(p, "analysis.csv")
-
-    # ---------------------------------------------------------------------
-    # COCO Y0 export — produces text the user pastes by hand into the
-    # external MIAU solver. We do NOT submit to that site.
-    # External form: https://miau.my-x.hu/myx-free/coco/beker_y0.php
-    # ---------------------------------------------------------------------
-
-    @app.get("/coco/preview")
-    def coco_preview(
-        oam_variant: str = Query("minimal", pattern="^(minimal|extended)$"),
-        step_count: int = Query(0, ge=0, le=20),
-    ):
-        """
-        Returns the structured payload + every rendered string. The frontend
-        uses these to populate the COCO Y0 panel and to power the four
-        Copy / Download actions.
-        """
-        try:
-            return coco_export.coco_export_payload(
-                variant=oam_variant, step_count=step_count
-            )
-        except coco_export.CocoExportError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-
-    @app.get("/coco/download")
-    def coco_download(
-        oam_variant: str = Query("minimal", pattern="^(minimal|extended)$"),
-        step_count: int = Query(0, ge=0, le=20),
-    ):
-        """Writes data/exports/coco_input.txt and returns it as attachment."""
-        try:
-            p = coco_export.write_coco_input_file(
-                variant=oam_variant, step_count=step_count
-            )
-        except coco_export.CocoExportError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        return FileResponse(str(p), media_type="text/plain",
-                            filename="coco_input.txt")

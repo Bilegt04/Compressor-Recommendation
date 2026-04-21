@@ -208,36 +208,60 @@
       <summary>2. Compare COCO Y0 result against the app recommendation</summary>
 
       <div class="coco-warning-banner">
-        <strong>Paste FINAL COCO result only</strong> — not the ranked matrix.
-        The ranked matrix above is the <em>input</em> to the external solver;
-        what you paste here must be its <em>output</em>.
+        <strong>Paste the FINAL MIAU COCO Y0 output</strong> — not the ranked
+        input matrix and not the staircase diagnostics. The app needs
+        <strong>both</strong> the <code>Rangsor</code> block (to map
+        <code>O2</code>, <code>O3</code>, … back to object IDs) AND the
+        <code>COCO:Y0</code> block (the final estimates).
       </div>
 
       <p class="help" style="margin-top:10px;">
-        Accepted formats:
+        Accepted inputs (in order of preference):
       </p>
 
       <div class="coco-examples">
         <div class="coco-example">
-          <div class="coco-example-title">Ranked list (best → worst)</div>
-          <pre class="coco-example-pre">img001_avif_q50
-img001_webp_q80
-img001_webp_q60
-img001_jpeg_q70
-img001_jpeg_q90</pre>
+          <div class="coco-example-title">
+            MIAU output — Rangsor + COCO:Y0
+          </div>
+          <pre class="coco-example-pre">Rangsor
+O1    img001_jpeg_q90
+O2    img001_jpeg_q70
+O3    img001_webp_q80
+O4    img001_webp_q60
+O5    img001_avif_q50
+
+COCO:Y0
+Objektum   Becslés
+O5         998765
+O3         998210
+O4         997950
+O2         997400
+O1         997100</pre>
         </div>
         <div class="coco-example">
-          <div class="coco-example-title">Object ID + single numeric score</div>
+          <div class="coco-example-title">
+            Direct — converted to object IDs yourself
+          </div>
           <pre class="coco-example-pre">img001_avif_q50  998765
 img001_webp_q80  998210
 img001_webp_q60  997950
 img001_jpeg_q70  997400
-img001_jpeg_q90  997100</pre>
+img001_jpeg_q90  997100
+
+(Or a plain ranked list, best to worst,
+one object_id per line, no numbers.)</pre>
         </div>
       </div>
 
-      <textarea id="coco-paste" rows="8"
-                placeholder="Paste the COCO Y0 output here (one object_id per line)"></textarea>
+      <p class="help" style="margin-top:6px; font-size:11px; color:#777;">
+        Winner rule: <strong>higher Becslés = better</strong>.
+        Staircase blocks (<code>Lépcsők(1)</code>, <code>Lépcsők(2)</code>)
+        are diagnostics and will be rejected if pasted alone.
+      </p>
+
+      <textarea id="coco-paste" rows="10"
+                placeholder="Paste the MIAU output here — include both the Rangsor block and the COCO:Y0 block."></textarea>
 
       <div class="coco-actions">
         <button type="button" id="coco-compare-btn" class="secondary-btn">

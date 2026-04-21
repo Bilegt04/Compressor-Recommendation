@@ -528,7 +528,7 @@ function initCocoComparePanel() {
 
   // Render parser diagnostics (on both success and failure paths).
   // On failure: red banner + rejected-line listing.
-  // On success: compact green banner confirming what was parsed.
+  // On success: green banner with detected blocks, Rangsor/Y0 counts, winner rule.
   function renderDiagnostics({ ok, message, diagnostics, format_detected }) {
     diagEl.hidden = false;
     diagEl.className = "coco-diagnostics " + (ok ? "ok" : "error");
@@ -539,13 +539,32 @@ function initCocoComparePanel() {
       parts.push(`Detected format: <code>${escapeHtml(format_detected)}</code>`);
     }
     if (diagnostics) {
-      parts.push(
-        `Matched object-id lines: <strong>${diagnostics.n_matched || 0}</strong> · ` +
-        `Rejected lines: <strong>${diagnostics.n_rejected || 0}</strong>`
-      );
+      const statsLine = [];
+      if (diagnostics.blocks_detected && diagnostics.blocks_detected.length) {
+        statsLine.push(
+          `Blocks detected: ${diagnostics.blocks_detected
+              .map(b => `<code>${escapeHtml(b)}</code>`).join(", ")}`);
+      }
+      if (typeof diagnostics.rangsor_count === "number") {
+        statsLine.push(`Rangsor entries: <strong>${diagnostics.rangsor_count}</strong>`);
+      }
+      if (typeof diagnostics.y0_row_count === "number") {
+        statsLine.push(`COCO:Y0 rows: <strong>${diagnostics.y0_row_count}</strong>`);
+      }
+      statsLine.push(
+        `Mapped objects: <strong>${diagnostics.n_matched || 0}</strong>`);
+      if (typeof diagnostics.n_rejected === "number") {
+        statsLine.push(`Rejected: <strong>${diagnostics.n_rejected}</strong>`);
+      }
+      if (diagnostics.winner_rule) {
+        statsLine.push(`Winner rule: <em>${escapeHtml(diagnostics.winner_rule)}</em>`);
+      }
+      if (statsLine.length) parts.push(statsLine.join(" · "));
+
       if (diagnostics.rejected_lines && diagnostics.rejected_lines.length) {
         const items = diagnostics.rejected_lines.slice(0, 10).map(r =>
-          `<li>line ${r.line_no}: ${escapeHtml(r.reason)} — <code>${escapeHtml(r.text)}</code></li>`
+          `<li>${r.line_no ? `line ${r.line_no}: ` : ""}` +
+          `${escapeHtml(r.reason)}${r.text ? ` — <code>${escapeHtml(r.text)}</code>` : ""}</li>`
         ).join("");
         const overflow = diagnostics.rejected_lines.length > 10
           ? `<li>… and ${diagnostics.rejected_lines.length - 10} more</li>` : "";

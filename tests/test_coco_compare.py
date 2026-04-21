@@ -84,7 +84,7 @@ def test_parser_scored_format():
     img001_webp_q80    0.420
     """
     out = coco_compare.parse_coco_paste(text)
-    assert out["format_detected"] == "scored"
+    assert out["format_detected"] == "direct_scored"
     assert out["ranking"] == [
         "img001_avif_q50", "img001_jpeg_q90", "img001_webp_q80",
     ]
@@ -99,7 +99,7 @@ def test_parser_ranked_list_format():
     3. img001_webp_q80
     """
     out = coco_compare.parse_coco_paste(text)
-    assert out["format_detected"] == "ranked_list"
+    assert out["format_detected"] == "direct_ranked_list"
     assert out["ranking"][0] == "img001_avif_q50"
     print("  parser_ranked_list_format: OK")
 
@@ -112,7 +112,7 @@ def test_parser_mixed_separators():
         "  img003_webp_q80   0.7  \n"
     )
     out = coco_compare.parse_coco_paste(text)
-    assert out["format_detected"] == "scored"
+    assert out["format_detected"] == "direct_scored"
     # img002 has highest score → first
     assert out["ranking"][0] == "img002_avif_q50"
     print("  parser_mixed_separators: OK")
@@ -150,7 +150,7 @@ def test_parser_does_not_grab_q_number_as_score():
     the object id. Make sure the score parser strips the id first."""
     out = coco_compare.parse_coco_paste("img001_jpeg_q90\n")
     # No score on the line → falls back to ranked_list
-    assert out["format_detected"] == "ranked_list"
+    assert out["format_detected"] == "direct_ranked_list"
     print("  parser_does_not_grab_q_number_as_score: OK")
 
 
@@ -279,7 +279,7 @@ def test_rejects_ranked_matrix_input():
         coco_compare.parse_coco_paste(matrix_paste)
     except coco_compare.CocoCompareError as e:
         msg = str(e)
-        assert "ranked matrix" in msg.lower() or "COCO input" in msg, msg
+        assert "ranked-matrix" in msg.lower() or "ranked matrix" in msg.lower() or "COCO input" in msg, msg
         # Diagnostics must identify which lines were rejected
         assert e.diagnostics["n_rejected"] >= 3
         reasons = [r["reason"] for r in e.diagnostics["rejected_lines"]]
@@ -298,7 +298,7 @@ def test_rejects_extended_matrix_four_numbers():
     try:
         coco_compare.parse_coco_paste(paste)
     except coco_compare.CocoCompareError as e:
-        assert "ranked matrix" in str(e).lower() or "COCO input" in str(e)
+        msg = str(e); assert "ranked-matrix" in msg.lower() or "ranked matrix" in msg.lower() or "COCO input" in msg
         print("  rejects_extended_matrix_four_numbers: OK")
     else:
         raise AssertionError("Parser accepted a 4-column matrix row")
@@ -312,7 +312,7 @@ def test_accepts_ranked_list_with_rank_prefix():
         "3. img001_jpeg_q90\n"
     )
     out = coco_compare.parse_coco_paste(paste)
-    assert out["format_detected"] == "ranked_list", out
+    assert out["format_detected"] == "direct_ranked_list", out
     assert out["ranking"][0] == "img001_avif_q50"
     assert out["diagnostics"]["n_matched"] == 3
     assert out["diagnostics"]["n_rejected"] == 0
@@ -346,7 +346,7 @@ def test_diagnostics_populated_on_success():
 def test_diagnostics_populated_on_rejection():
     paste = "random text line\nimg001_avif_q50\nsome nonsense\n"
     out = coco_compare.parse_coco_paste(paste)  # valid ranked_list with noise
-    assert out["format_detected"] == "ranked_list"
+    assert out["format_detected"] == "direct_ranked_list"
     assert out["diagnostics"]["n_matched"] == 1
     assert out["diagnostics"]["n_rejected"] == 2
     reasons = [r["reason"] for r in out["diagnostics"]["rejected_lines"]]
@@ -362,3 +362,181 @@ test_rejects_mixed_shapes()
 test_diagnostics_populated_on_success()
 test_diagnostics_populated_on_rejection()
 print("AUDIT TESTS PASSED")
+
+
+# ---------------------------------------------------------------------------
+# MIAU-format tests
+# ---------------------------------------------------------------------------
+
+MIAU_VALID_PASTE = """Rangsor
+O1    img001_jpeg_q90
+O2    img001_jpeg_q70
+O3    img001_webp_q80
+O4    img001_webp_q60
+O5    img001_avif_q50
+
+Lépcsők(1)
+(staircase diagnostic rows here — should be ignored)
+O1  500  400
+O2  450  380
+
+Lépcsők(2)
+(more staircase diagnostics)
+
+COCO:Y0
+Objektum   Becslés
+O5         998765
+O3         998210
+O4         997950
+O2         997400
+O1         997100
+"""
+
+
+def test_miau_parses_rangsor_plus_y0():
+    out = coco_compare.parse_coco_paste(MIAU_VALID_PASTE)
+    assert out["format_detected"] == "miau_rangsor+y0"
+    # O5 has highest Becslés → winner. Rangsor says O5 = img001_avif_q50.
+    assert out["ranking"][0] == "img001_avif_q50"
+    # Full ranking follows MIAU order
+    assert out["ranking"] == [
+        "img001_avif_q50",
+        "img001_webp_q80",
+        "img001_webp_q60",
+        "img001_jpeg_q70",
+        "img001_jpeg_q90",
+    ]
+    assert out["scores"]["img001_avif_q50"] == 998765
+    assert out["o_to_object_id"]["O5"] == "img001_avif_q50"
+    d = out["diagnostics"]
+    assert "rangsor" in d["blocks_detected"]
+    assert "coco_y0" in d["blocks_detected"]
+    assert "lepcsok1" in d["blocks_detected"]   # detected but not used
+    assert d["rangsor_count"] == 5
+    assert d["y0_row_count"] == 5
+    assert d["n_matched"] == 5
+    assert d["n_rejected"] == 0
+    assert "higher Becslés" in d["winner_rule"]
+    print("  miau_parses_rangsor_plus_y0: OK")
+
+
+def test_miau_rejects_only_staircase():
+    paste = """Lépcsők(1)
+O1  500  400
+O2  450  380
+O3  440  350
+"""
+    try:
+        coco_compare.parse_coco_paste(paste)
+    except coco_compare.CocoCompareError as e:
+        assert "staircase" in str(e).lower()
+        print("  miau_rejects_only_staircase: OK")
+    else:
+        raise AssertionError("should have rejected staircase-only paste")
+
+
+def test_miau_rejects_y0_without_rangsor():
+    paste = """COCO:Y0
+Objektum   Becslés
+O5         998765
+O3         998210
+"""
+    try:
+        coco_compare.parse_coco_paste(paste)
+    except coco_compare.CocoCompareError as e:
+        msg = str(e)
+        assert "Rangsor" in msg and "O1, O2" in msg or "internal row labels" in msg
+        print("  miau_rejects_y0_without_rangsor: OK")
+    else:
+        raise AssertionError("should have rejected Y0-only paste")
+
+
+def test_miau_rejects_rangsor_without_y0():
+    paste = """Rangsor
+O1  img001_jpeg_q90
+O2  img001_jpeg_q70
+"""
+    try:
+        coco_compare.parse_coco_paste(paste)
+    except coco_compare.CocoCompareError as e:
+        assert "COCO:Y0" in str(e) or "final COCO:Y0" in str(e)
+        print("  miau_rejects_rangsor_without_y0: OK")
+    else:
+        raise AssertionError("should have rejected Rangsor-only paste")
+
+
+def test_miau_y0_rows_outside_rangsor_are_diagnosed():
+    """If COCO:Y0 references O7 but Rangsor has no O7, report it."""
+    paste = """Rangsor
+O1  img001_jpeg_q90
+O2  img001_jpeg_q70
+
+COCO:Y0
+Objektum   Becslés
+O1         900
+O2         800
+O7         700
+"""
+    out = coco_compare.parse_coco_paste(paste)
+    # O1 and O2 match, O7 is rejected
+    assert out["format_detected"] == "miau_rangsor+y0"
+    assert len(out["ranking"]) == 2
+    reasons = [r["reason"] for r in out["diagnostics"]["rejected_lines"]]
+    assert any("O7" in r for r in reasons), reasons
+    print("  miau_y0_rows_outside_rangsor_are_diagnosed: OK")
+
+
+def test_miau_hungarian_decimal_comma():
+    """MIAU may print decimals with comma. Parser must accept."""
+    paste = """Rangsor
+O1  img001_jpeg_q90
+O2  img001_avif_q50
+
+COCO:Y0
+O1   997,10
+O2   998,76
+"""
+    out = coco_compare.parse_coco_paste(paste)
+    # O2 has the higher value (998.76 > 997.10)
+    assert out["ranking"][0] == "img001_avif_q50"
+    assert out["scores"]["img001_avif_q50"] == 998.76
+    print("  miau_hungarian_decimal_comma: OK")
+
+
+def test_miau_tie_breaking_stable():
+    """Two O-rows with identical Becslés → MIAU row order wins."""
+    paste = """Rangsor
+O1  img001_jpeg_q90
+O2  img001_avif_q50
+
+COCO:Y0
+O1   500
+O2   500
+"""
+    out = coco_compare.parse_coco_paste(paste)
+    # Both scores equal → O1 appears first in the Y0 block → img001_jpeg_q90 first.
+    assert out["ranking"] == ["img001_jpeg_q90", "img001_avif_q50"]
+    print("  miau_tie_breaking_stable: OK")
+
+
+def test_direct_paste_still_works():
+    """Pre-converted object_id paste still works (fallback format)."""
+    paste = """img001_avif_q50 998765
+img001_jpeg_q90 997100
+"""
+    out = coco_compare.parse_coco_paste(paste)
+    assert out["format_detected"] == "direct_scored"
+    assert out["ranking"][0] == "img001_avif_q50"
+    print("  direct_paste_still_works: OK")
+
+
+print("\n=== MIAU-format tests ===")
+test_miau_parses_rangsor_plus_y0()
+test_miau_rejects_only_staircase()
+test_miau_rejects_y0_without_rangsor()
+test_miau_rejects_rangsor_without_y0()
+test_miau_y0_rows_outside_rangsor_are_diagnosed()
+test_miau_hungarian_decimal_comma()
+test_miau_tie_breaking_stable()
+test_direct_paste_still_works()
+print("MIAU TESTS PASSED")

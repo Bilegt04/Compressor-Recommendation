@@ -36,6 +36,7 @@ from backend.services.metrics import MetricError
 from backend.services import export_service  # noqa: F401 (kept intentionally)
 from backend.services import coco_export      # noqa: F401 (kept intentionally)
 from backend.services import coco_compare     # noqa: F401 (kept intentionally)
+from backend.services import coco_local
 
 
 app = FastAPI(
@@ -112,11 +113,20 @@ def run_pipeline(image_id: str, original_path: Path,
         recommended, recommended_topsis, topsis_ranking
     )
 
+    # Local COCO Y0 approximation over the full variant set (NOT just the
+    # Pareto front — COCO ranks all candidates). Labeled as an approximation
+    # everywhere it surfaces; NOT used as the primary recommendation.
+    coco_local_results = coco_local.local_coco_y0(variants)
+    coco_local_top = (coco_local.top_pick(coco_local_results)
+                      if coco_local_results else None)
+
     rec_sig = _variant_sig(recommended)
+    coco_local_top_oid = coco_local_top.object_id if coco_local_top else None
     for v in variants:
         sig = _variant_sig(v)
         v["is_pareto"] = sig in front_sigs
         v["is_recommended"] = sig == rec_sig
+        v["is_coco_local_top"] = (v["object_id"] == coco_local_top_oid)
 
     payload = {
         "image_id": image_id,
@@ -132,6 +142,27 @@ def run_pipeline(image_id: str, original_path: Path,
         "topsis": {"ranking": topsis_ranking,
                    "recommended": recommended_topsis},
         "decision_rule_comparison": rule_comparison,
+        "coco_local": {
+            "approximation": True,
+            "note": ("Local OLS-based Y0 approximation. Not verified against "
+                     "the external MIAU solver. For thesis-grade evidence, "
+                     "paste real MIAU output into the comparison panel."),
+            "results": [
+                {
+                    "object_id": r.object_id,
+                    "format": r.format,
+                    "encoder_quality_param": r.encoder_quality_param,
+                    "becsles": r.becsles,
+                    "rank": r.rank,
+                } for r in coco_local_results
+            ],
+            "top_pick": {
+                "object_id": coco_local_top.object_id,
+                "format": coco_local_top.format,
+                "encoder_quality_param": coco_local_top.encoder_quality_param,
+                "becsles": coco_local_top.becsles,
+            } if coco_local_top else None,
+        },
     }
     storage.write_result(image_id, payload)
     return payload
@@ -141,6 +172,7 @@ def _user_view(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Compose the user-friendly response. Internal fields are preserved
     in storage but not surfaced here."""
     original_kb = payload["recommended"].get("original_size_kb", 0.0)
+    coco_local_info = payload.get("coco_local") or {}
     return {
         "image_id": payload["image_id"],
         "original_size_kb": original_kb,
@@ -152,6 +184,7 @@ def _user_view(payload: Dict[str, Any]) -> Dict[str, Any]:
             for v in payload["variants"]
         ],
         "recommended_variant_key": payload["recommended_key"],
+        "coco_local": coco_local_info,
     }
 
 

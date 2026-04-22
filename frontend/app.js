@@ -63,6 +63,7 @@ const devExports = document.getElementById("dev-exports");
 // Upload state — the ONE source of truth for the selected file.
 let currentFile = null;
 let currentThumbUrl = null;
+let editedBlob = null;              // replaces currentFile at submit time, if set
 let configFlags = { oam_features_enabled: false, max_upload_bytes: 0 };
 
 // ===========================================================================
@@ -158,6 +159,9 @@ function acceptFile(file) {
   dropzone.classList.add("has-file");
   submitBtn.disabled = false;
   setStatus("", "");
+
+  // Load into the optional crop/resize editor.
+  loadFileIntoEditor(file);
   return true;
 }
 
@@ -167,6 +171,7 @@ function resetFile() {
     currentThumbUrl = null;
   }
   currentFile = null;
+  editedBlob = null;
   fileInput.value = "";        // clear native picker state too
   previewThumb.src = "";
   selectedFilename.textContent = "";
@@ -175,6 +180,7 @@ function resetFile() {
   dropzoneSelected.hidden = true;
   dropzone.classList.remove("has-file");
   submitBtn.disabled = true;
+  resetEditor();
 }
 
 // Picker path — user clicked the dropzone, browser opened the picker.
@@ -292,7 +298,8 @@ function renderVariants(data) {
     const card = document.createElement("div");
     card.className = "variant-card" +
       (v.is_recommended ? " is-recommended" : "") +
-      (v.is_efficient && !v.is_recommended ? " is-efficient" : "");
+      (v.is_efficient && !v.is_recommended ? " is-efficient" : "") +
+      (v.is_coco_local_top ? " is-coco-top" : "");
 
     const badges = [];
     if (v.is_recommended) {
@@ -300,6 +307,13 @@ function renderVariants(data) {
     } else if (v.is_efficient) {
       badges.push('<span class="badge efficient">Efficient option</span>');
     }
+    if (v.is_coco_local_top) {
+      badges.push('<span class="badge coco-top" title="Rank 1 by local COCO Y0 approximation">COCO #1</span>');
+    }
+
+    // Every variant gets a download button — users choose what they want.
+    const dlHref = `/images/${data.image_id}/variant/${v.variant_key}`;
+    const dlName = `${data.image_id}_${v.variant_key}`;
 
     card.innerHTML = `
       <div class="format-title">${v.format_name}, quality ${v.encoder_quality_param}${badges.join("")}</div>
@@ -307,15 +321,54 @@ function renderVariants(data) {
       <div class="stat-row"><span class="stat-label">Saved</span><span class="stat-value">${formatPercent(v.percent_saved)}</span></div>
       <div class="stat-row"><span class="stat-label" title="Peak signal-to-noise ratio — a technical quality measure. Higher is better.">PSNR</span><span class="stat-value">${typeof v.psnr === "number" ? v.psnr.toFixed(2) + " dB" : "—"}</span></div>
       <div class="stat-row"><span class="stat-label" title="Structural similarity to the original. 1.0 means identical.">SSIM</span><span class="stat-value">${typeof v.ssim === "number" ? v.ssim.toFixed(4) : "—"}</span></div>
+      <a class="variant-download-btn" href="${dlHref}" download="${dlName}">Download this variant</a>
     `;
     variantsGrid.appendChild(card);
   }
   variantsPanel.hidden = false;
 }
 
+// COCO Y0 local approximation — shown alongside the app's recommendation.
+// NOT a replacement for it; second opinion only, with visible caveats.
+function renderCocoLocal(data) {
+  const cl = data.coco_local;
+  const panel = document.getElementById("coco-local-panel");
+  const pickEl = document.getElementById("coco-local-pick");
+  const dlBtn = document.getElementById("coco-local-download-btn");
+  const tbody = document.querySelector("#coco-local-table tbody");
+
+  if (!cl || !cl.top_pick || !cl.results || !cl.results.length) {
+    panel.hidden = true;
+    return;
+  }
+
+  const top = cl.top_pick;
+  const variantKey = `${top.format}_q${top.encoder_quality_param}`;
+  pickEl.innerHTML =
+    `<strong>${top.format.toUpperCase()}, quality ${top.encoder_quality_param}</strong>` +
+    ` — Becslés ${top.becsles.toFixed(4)}`;
+
+  dlBtn.href = `/images/${data.image_id}/variant/${variantKey}`;
+  dlBtn.setAttribute("download", `${data.image_id}_${variantKey}_coco_rank1`);
+
+  tbody.innerHTML = "";
+  for (const r of cl.results) {
+    const tr = document.createElement("tr");
+    if (r.rank === 1) tr.className = "is-rank-1";
+    tr.innerHTML =
+      `<td>${r.rank}</td>` +
+      `<td>${r.format.toUpperCase()} q${r.encoder_quality_param}</td>` +
+      `<td>${r.becsles.toFixed(4)}</td>`;
+    tbody.appendChild(tr);
+  }
+
+  panel.hidden = false;
+}
+
 function renderAll(data) {
   emptyState.hidden = true;
   renderRecommendation(data);
+  renderCocoLocal(data);
   renderPreview(data);
   renderVariants(data);
 }
@@ -335,7 +388,11 @@ form.addEventListener("submit", async (e) => {
   setStatus(STRINGS.analyzing, "loading");
 
   const fd = new FormData();
-  fd.append("file", currentFile, currentFile.name);
+  // Prefer the edited blob if the user applied crop/resize. Otherwise
+  // upload the original file untouched.
+  const uploadFile = editedBlob || currentFile;
+  const uploadName = editedBlob ? editedBlob.name : currentFile.name;
+  fd.append("file", uploadFile, uploadName);
 
   try {
     const resp = await fetch("/upload", { method: "POST", body: fd });
@@ -706,3 +763,406 @@ function initCocoComparePanel() {
 
   runBtn.addEventListener("click", runCompare);
 }
+
+
+// ===========================================================================
+// Crop + resize editor
+//
+// The editor is OPTIONAL. If the user doesn't touch it, the original file
+// uploads untouched. Applied edits produce a Blob stored in `editedBlob`
+// (module-scope, declared at the top of this file); submit prefers that
+// Blob over currentFile.
+//
+// All transforms happen on a client-side <canvas>. No server involvement.
+// ===========================================================================
+
+// Editor state — private to these functions; the only output is `editedBlob`.
+const _editor = {
+  originalImage: null,       // HTMLImageElement of the loaded file
+  originalWidth: 0,          // natural size
+  originalHeight: 0,
+  displayScale: 1,           // canvas-displayed size / natural size
+  crop: { enabled: false, x: 0, y: 0, w: 0, h: 0 },   // in ORIGINAL-pixel coords
+  resize: { enabled: false, w: 0, h: 0, lock: true },
+  aspectRatio: 1,            // original w/h
+  drag: null,                // { mode: "move"|"nw"|"ne"|"sw"|"se", startX, startY, startRect }
+};
+
+function loadFileIntoEditor(file) {
+  const panel = document.getElementById("edit-panel");
+  const canvas = document.getElementById("edit-canvas");
+  if (!panel || !canvas) return;
+
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    _editor.originalImage = img;
+    _editor.originalWidth = img.naturalWidth;
+    _editor.originalHeight = img.naturalHeight;
+    _editor.aspectRatio = img.naturalWidth / img.naturalHeight;
+
+    // Reset all editor state to sensible defaults for this image.
+    _editor.crop = {
+      enabled: false,
+      x: 0, y: 0,
+      w: img.naturalWidth,
+      h: img.naturalHeight,
+    };
+    _editor.resize = {
+      enabled: false,
+      w: img.naturalWidth,
+      h: img.naturalHeight,
+      lock: true,
+    };
+
+    // Input defaults
+    document.getElementById("crop-enable").checked = false;
+    document.getElementById("crop-inputs").hidden = true;
+    document.getElementById("crop-overlay").hidden = true;
+    document.getElementById("crop-x").value = 0;
+    document.getElementById("crop-y").value = 0;
+    document.getElementById("crop-w").value = img.naturalWidth;
+    document.getElementById("crop-h").value = img.naturalHeight;
+
+    document.getElementById("resize-enable").checked = false;
+    document.getElementById("resize-inputs").hidden = true;
+    document.getElementById("resize-w").value = img.naturalWidth;
+    document.getElementById("resize-h").value = img.naturalHeight;
+    document.getElementById("aspect-lock").checked = true;
+
+    drawEditorCanvas();
+    panel.hidden = false;
+    setEditorStatus("", "");
+    URL.revokeObjectURL(url);
+  };
+  img.onerror = () => {
+    setEditorStatus("Could not load the image for editing.", "error");
+    URL.revokeObjectURL(url);
+  };
+  img.src = url;
+}
+
+function resetEditor() {
+  const panel = document.getElementById("edit-panel");
+  if (panel) panel.hidden = true;
+  _editor.originalImage = null;
+  editedBlob = null;
+}
+
+function setEditorStatus(text, kind) {
+  const el = document.getElementById("edit-status");
+  if (!el) return;
+  el.textContent = text || "";
+  el.className = "edit-status" + (kind ? " " + kind : "");
+}
+
+// Canvas sizing: we render the original image at a maximum display width so
+// the editor panel fits comfortably on screen. All crop coords are stored in
+// ORIGINAL pixels; we convert via `_editor.displayScale` for overlay math.
+const MAX_CANVAS_WIDTH = 480;
+
+function drawEditorCanvas() {
+  const canvas = document.getElementById("edit-canvas");
+  if (!canvas || !_editor.originalImage) return;
+  const img = _editor.originalImage;
+
+  const scale = Math.min(1, MAX_CANVAS_WIDTH / img.naturalWidth);
+  const displayW = Math.round(img.naturalWidth * scale);
+  const displayH = Math.round(img.naturalHeight * scale);
+
+  canvas.width = displayW;
+  canvas.height = displayH;
+  canvas.style.width = displayW + "px";
+  canvas.style.height = displayH + "px";
+
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, displayW, displayH);
+  ctx.drawImage(img, 0, 0, displayW, displayH);
+
+  _editor.displayScale = scale;
+  updateCropOverlay();
+}
+
+function updateCropOverlay() {
+  const overlay = document.getElementById("crop-overlay");
+  const rect = document.getElementById("crop-rect");
+  if (!overlay || !rect) return;
+
+  if (!_editor.crop.enabled || !_editor.originalImage) {
+    overlay.hidden = true;
+    return;
+  }
+  const s = _editor.displayScale;
+  const canvas = document.getElementById("edit-canvas");
+  overlay.style.width = canvas.width + "px";
+  overlay.style.height = canvas.height + "px";
+  overlay.hidden = false;
+
+  rect.style.left   = Math.round(_editor.crop.x * s) + "px";
+  rect.style.top    = Math.round(_editor.crop.y * s) + "px";
+  rect.style.width  = Math.round(_editor.crop.w * s) + "px";
+  rect.style.height = Math.round(_editor.crop.h * s) + "px";
+}
+
+function syncCropInputs() {
+  document.getElementById("crop-x").value = Math.round(_editor.crop.x);
+  document.getElementById("crop-y").value = Math.round(_editor.crop.y);
+  document.getElementById("crop-w").value = Math.round(_editor.crop.w);
+  document.getElementById("crop-h").value = Math.round(_editor.crop.h);
+}
+
+function clampCrop() {
+  const c = _editor.crop;
+  c.x = Math.max(0, Math.min(c.x, _editor.originalWidth - 1));
+  c.y = Math.max(0, Math.min(c.y, _editor.originalHeight - 1));
+  c.w = Math.max(1, Math.min(c.w, _editor.originalWidth - c.x));
+  c.h = Math.max(1, Math.min(c.h, _editor.originalHeight - c.y));
+}
+
+function initEditor() {
+  const cropEnable   = document.getElementById("crop-enable");
+  const cropInputs   = document.getElementById("crop-inputs");
+  const cropX        = document.getElementById("crop-x");
+  const cropY        = document.getElementById("crop-y");
+  const cropW        = document.getElementById("crop-w");
+  const cropH        = document.getElementById("crop-h");
+  const resizeEnable = document.getElementById("resize-enable");
+  const resizeInputs = document.getElementById("resize-inputs");
+  const resizeW      = document.getElementById("resize-w");
+  const resizeH      = document.getElementById("resize-h");
+  const aspectLock   = document.getElementById("aspect-lock");
+  const applyBtn     = document.getElementById("edit-apply-btn");
+  const resetBtn     = document.getElementById("edit-reset-btn");
+  const overlay      = document.getElementById("crop-overlay");
+  const rect         = document.getElementById("crop-rect");
+
+  if (!cropEnable) return;   // markup missing — editor disabled
+
+  // --- Crop toggle ---
+  cropEnable.addEventListener("change", () => {
+    _editor.crop.enabled = cropEnable.checked;
+    cropInputs.hidden = !cropEnable.checked;
+    // Default the crop to the full image on first enable.
+    if (cropEnable.checked) {
+      _editor.crop.x = 0;
+      _editor.crop.y = 0;
+      _editor.crop.w = _editor.originalWidth;
+      _editor.crop.h = _editor.originalHeight;
+      syncCropInputs();
+    }
+    updateCropOverlay();
+  });
+
+  // --- Crop inputs (bidirectional with the overlay) ---
+  function onCropInput() {
+    _editor.crop.x = parseInt(cropX.value, 10) || 0;
+    _editor.crop.y = parseInt(cropY.value, 10) || 0;
+    _editor.crop.w = parseInt(cropW.value, 10) || 1;
+    _editor.crop.h = parseInt(cropH.value, 10) || 1;
+    clampCrop();
+    syncCropInputs();
+    updateCropOverlay();
+  }
+  [cropX, cropY, cropW, cropH].forEach(el => el.addEventListener("input", onCropInput));
+
+  // --- Crop drag (move + 4 corners) ---
+  function pointerPosInOriginal(e) {
+    const canvas = document.getElementById("edit-canvas");
+    const box = canvas.getBoundingClientRect();
+    const px = (e.clientX - box.left) / _editor.displayScale;
+    const py = (e.clientY - box.top)  / _editor.displayScale;
+    return { x: Math.round(px), y: Math.round(py) };
+  }
+
+  function beginDrag(mode, e) {
+    const p = pointerPosInOriginal(e);
+    _editor.drag = {
+      mode,
+      startPx: p,
+      startRect: { ...(_editor.crop) },
+    };
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  rect.addEventListener("mousedown", (e) => {
+    // Corner hit-test: 10px in display space = 10/scale in original space
+    const p = pointerPosInOriginal(e);
+    const c = _editor.crop;
+    const threshold = 12 / _editor.displayScale;
+    const nearLeft   = Math.abs(p.x - c.x)            < threshold;
+    const nearRight  = Math.abs(p.x - (c.x + c.w))    < threshold;
+    const nearTop    = Math.abs(p.y - c.y)            < threshold;
+    const nearBottom = Math.abs(p.y - (c.y + c.h))    < threshold;
+    let mode = "move";
+    if (nearLeft && nearTop) mode = "nw";
+    else if (nearRight && nearTop) mode = "ne";
+    else if (nearLeft && nearBottom) mode = "sw";
+    else if (nearRight && nearBottom) mode = "se";
+    beginDrag(mode, e);
+  });
+
+  window.addEventListener("mousemove", (e) => {
+    const d = _editor.drag;
+    if (!d) return;
+    const p = pointerPosInOriginal(e);
+    const dx = p.x - d.startPx.x;
+    const dy = p.y - d.startPx.y;
+    const r = d.startRect;
+    const c = _editor.crop;
+    if (d.mode === "move") {
+      c.x = r.x + dx;
+      c.y = r.y + dy;
+      c.w = r.w;
+      c.h = r.h;
+    } else if (d.mode === "nw") {
+      c.x = r.x + dx;
+      c.y = r.y + dy;
+      c.w = r.w - dx;
+      c.h = r.h - dy;
+    } else if (d.mode === "ne") {
+      c.x = r.x;
+      c.y = r.y + dy;
+      c.w = r.w + dx;
+      c.h = r.h - dy;
+    } else if (d.mode === "sw") {
+      c.x = r.x + dx;
+      c.y = r.y;
+      c.w = r.w - dx;
+      c.h = r.h + dy;
+    } else if (d.mode === "se") {
+      c.x = r.x;
+      c.y = r.y;
+      c.w = r.w + dx;
+      c.h = r.h + dy;
+    }
+    clampCrop();
+    syncCropInputs();
+    updateCropOverlay();
+  });
+
+  window.addEventListener("mouseup", () => { _editor.drag = null; });
+
+  // --- Resize toggle + inputs ---
+  resizeEnable.addEventListener("change", () => {
+    _editor.resize.enabled = resizeEnable.checked;
+    resizeInputs.hidden = !resizeEnable.checked;
+    if (resizeEnable.checked) {
+      // Default to the current crop size if crop enabled, else original.
+      const srcW = _editor.crop.enabled ? _editor.crop.w : _editor.originalWidth;
+      const srcH = _editor.crop.enabled ? _editor.crop.h : _editor.originalHeight;
+      resizeW.value = Math.round(srcW);
+      resizeH.value = Math.round(srcH);
+      _editor.resize.w = srcW;
+      _editor.resize.h = srcH;
+    }
+  });
+
+  aspectLock.addEventListener("change", () => {
+    _editor.resize.lock = aspectLock.checked;
+  });
+
+  resizeW.addEventListener("input", () => {
+    const v = Math.max(1, parseInt(resizeW.value, 10) || 1);
+    _editor.resize.w = v;
+    if (_editor.resize.lock) {
+      // Use the SOURCE aspect ratio (of the crop if enabled, else original)
+      const srcW = _editor.crop.enabled ? _editor.crop.w : _editor.originalWidth;
+      const srcH = _editor.crop.enabled ? _editor.crop.h : _editor.originalHeight;
+      const ar = srcW / srcH;
+      _editor.resize.h = Math.max(1, Math.round(v / ar));
+      resizeH.value = _editor.resize.h;
+    }
+  });
+  resizeH.addEventListener("input", () => {
+    const v = Math.max(1, parseInt(resizeH.value, 10) || 1);
+    _editor.resize.h = v;
+    if (_editor.resize.lock) {
+      const srcW = _editor.crop.enabled ? _editor.crop.w : _editor.originalWidth;
+      const srcH = _editor.crop.enabled ? _editor.crop.h : _editor.originalHeight;
+      const ar = srcW / srcH;
+      _editor.resize.w = Math.max(1, Math.round(v * ar));
+      resizeW.value = _editor.resize.w;
+    }
+  });
+
+  // --- Apply ---
+  applyBtn.addEventListener("click", () => {
+    if (!_editor.originalImage || !currentFile) {
+      setEditorStatus("No image loaded.", "error");
+      return;
+    }
+    if (!_editor.crop.enabled && !_editor.resize.enabled) {
+      // Nothing to apply — clear any prior edit and tell the user.
+      editedBlob = null;
+      setEditorStatus("No edits to apply. Original will be uploaded.", "");
+      return;
+    }
+
+    // Source rect (crop or full image)
+    const src = _editor.crop.enabled
+      ? { x: _editor.crop.x, y: _editor.crop.y,
+          w: _editor.crop.w, h: _editor.crop.h }
+      : { x: 0, y: 0,
+          w: _editor.originalWidth, h: _editor.originalHeight };
+
+    // Destination size (resize target or source-as-is)
+    const dst = _editor.resize.enabled
+      ? { w: _editor.resize.w, h: _editor.resize.h }
+      : { w: src.w, h: src.h };
+
+    if (src.w < 1 || src.h < 1 || dst.w < 1 || dst.h < 1) {
+      setEditorStatus("Edit parameters are invalid.", "error");
+      return;
+    }
+
+    const out = document.createElement("canvas");
+    out.width = dst.w;
+    out.height = dst.h;
+    const octx = out.getContext("2d");
+    octx.imageSmoothingEnabled = true;
+    octx.imageSmoothingQuality = "high";
+    octx.drawImage(
+      _editor.originalImage,
+      src.x, src.y, src.w, src.h,     // source rect
+      0, 0, dst.w, dst.h              // destination rect
+    );
+
+    // Keep PNG for loss-less edit transport; the backend re-encodes anyway.
+    const outName = currentFile.name.replace(/\.[^.]+$/, "") + "_edited.png";
+    out.toBlob((blob) => {
+      if (!blob) {
+        setEditorStatus("Could not encode the edited image.", "error");
+        return;
+      }
+      // Re-wrap as File so FormData carries a name consistently.
+      editedBlob = new File([blob], outName, { type: "image/png" });
+      selectedFilename.textContent = outName;
+      selectedMeta.textContent =
+        `${dst.w}×${dst.h} · ${formatBytes(editedBlob.size)} (edited)`;
+      setEditorStatus(
+        `Applied. The upload will use the edited image (${dst.w}×${dst.h}).`,
+        "ok"
+      );
+    }, "image/png");
+  });
+
+  // --- Reset to original ---
+  resetBtn.addEventListener("click", () => {
+    if (!currentFile) return;
+    editedBlob = null;
+    cropEnable.checked = false;
+    resizeEnable.checked = false;
+    cropInputs.hidden = true;
+    resizeInputs.hidden = true;
+    _editor.crop.enabled = false;
+    _editor.resize.enabled = false;
+    loadFileIntoEditor(currentFile);
+    selectedFilename.textContent = currentFile.name;
+    selectedMeta.textContent = formatBytes(currentFile.size);
+    setEditorStatus("Reset. Original image will be uploaded.", "");
+  });
+}
+
+// Kick off editor wiring once.
+initEditor();

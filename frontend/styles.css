@@ -643,3 +643,220 @@ script[type="text/plain"] {
 
   .coco-grid { grid-template-columns: 1fr; }
 }
+
+/* ===========================================================================
+ * Optional crop + resize editor
+ * ========================================================================= */
+.edit-panel {
+  margin-top: 14px;
+  padding: 12px;
+  background: #fafbfc;
+  border: 1px solid #e0e3e8;
+  border-radius: 8px;
+}
+.edit-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: #2d3550;
+}
+
+.edit-grid {
+  display: grid;
+  grid-template-columns: minmax(0, auto) 1fr;
+  gap: 16px;
+  align-items: flex-start;
+}
+@media (max-width: 720px) {
+  .edit-grid { grid-template-columns: 1fr; }
+}
+
+.edit-preview-wrap {
+  position: relative;
+  flex-shrink: 0;
+  max-width: 100%;
+}
+.edit-canvas {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid #c9ced6;
+  border-radius: 4px;
+  background: #eee;
+}
+
+/* Crop overlay sits on top of the canvas; the <canvas> itself handles the
+ * image pixels, this div handles the rectangle UI. */
+.crop-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.crop-rect {
+  position: absolute;
+  border: 2px dashed #2a7;
+  background: rgba(42, 170, 113, 0.08);
+  cursor: move;
+  pointer-events: auto;
+  box-sizing: border-box;
+}
+/* Corner handles — not clickable as separate elements; the crop-rect
+ * handler does hit-testing based on pointer position to avoid fiddly DOM. */
+.crop-rect::before,
+.crop-rect::after {
+  content: "";
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: #2a7;
+  border: 2px solid #fff;
+  border-radius: 2px;
+}
+.crop-rect::before {
+  top: -6px; left: -6px;
+}
+.crop-rect::after {
+  bottom: -6px; right: -6px;
+}
+
+/* Controls column */
+.edit-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.edit-section { border-top: 1px solid #eef0f2; padding-top: 10px; }
+.edit-section:first-child { border-top: none; padding-top: 0; }
+.edit-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+.toggle-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #333;
+  cursor: pointer;
+  user-select: none;
+}
+.toggle-line input[type="checkbox"] {
+  width: 16px; height: 16px;
+  accent-color: #2a7;
+}
+.crop-inputs, .resize-inputs { margin-top: 8px; }
+.crop-fields, .resize-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 10px;
+}
+.crop-fields label,
+.resize-fields label {
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  color: #555;
+}
+.crop-fields input,
+.resize-fields input {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 4px 6px;
+  margin-top: 2px;
+  border: 1px solid #c9ced6;
+  border-radius: 4px;
+  font-variant-numeric: tabular-nums;
+  /* Hide native number-input spinners for a cleaner look */
+  -moz-appearance: textfield;
+}
+.crop-fields input::-webkit-outer-spin-button,
+.crop-fields input::-webkit-inner-spin-button,
+.resize-fields input::-webkit-outer-spin-button,
+.resize-fields input::-webkit-inner-spin-button {
+  -webkit-appearance: none; margin: 0;
+}
+.help-inline {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #777;
+}
+.edit-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding-top: 6px;
+}
+.edit-status {
+  font-size: 12px;
+  min-height: 18px;
+}
+.edit-status.error { color: #c33; }
+.edit-status.ok { color: #1e6e3f; }
+
+/* ===========================================================================
+ * Local COCO Y0 approximation panel + variant card badges/buttons
+ * ========================================================================= */
+.variant-card.is-coco-top {
+  outline: 2px solid #7e57c2;
+  outline-offset: -2px;
+}
+.badge.coco-top {
+  background: #efe5ff;
+  color: #4b2e83;
+}
+.variant-download-btn {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 6px 12px;
+  background: #1b2232;
+  color: #fff;
+  text-decoration: none;
+  font-size: 12px;
+  border-radius: 5px;
+  text-align: center;
+  width: 100%;
+  box-sizing: border-box;
+}
+.variant-download-btn:hover { background: #303a50; }
+
+.coco-local-panel {
+  margin-bottom: 20px;
+  padding: 14px 16px;
+  background: #faf7ff;
+  border: 1px solid #d9ccef;
+  border-left: 4px solid #7e57c2;
+  border-radius: 8px;
+}
+.coco-local-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+.coco-local-title { font-size: 14px; font-weight: 600; color: #4b2e83; }
+.coco-local-approx-pill {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  background: #7e57c2;
+  color: #fff;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+.coco-local-pick { font-size: 14px; color: #2d3550; }
+.coco-local-pick strong { color: #4b2e83; }
+.coco-local-caveat { margin: 6px 0 0; font-size: 11px; color: #6c5993; }

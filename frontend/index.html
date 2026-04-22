@@ -73,6 +73,71 @@
       </button>
     </form>
 
+    <!-- Edit panel — appears only when a file is selected -->
+    <div id="edit-panel" class="edit-panel" hidden>
+      <div class="edit-head">
+        <strong>Optional: edit before analyzing</strong>
+        <span class="help-inline">Crop and/or resize. Leave alone to keep original.</span>
+      </div>
+
+      <div class="edit-grid">
+        <div class="edit-preview-wrap">
+          <canvas id="edit-canvas" class="edit-canvas"></canvas>
+          <div id="crop-overlay" class="crop-overlay" hidden>
+            <div class="crop-rect" id="crop-rect"></div>
+          </div>
+        </div>
+
+        <div class="edit-controls">
+          <div class="edit-section">
+            <div class="edit-section-title">Crop</div>
+            <label class="toggle-line">
+              <input type="checkbox" id="crop-enable">
+              Enable crop
+            </label>
+            <div class="crop-inputs" id="crop-inputs" hidden>
+              <div class="crop-fields">
+                <label>X <input type="number" id="crop-x" min="0" value="0"></label>
+                <label>Y <input type="number" id="crop-y" min="0" value="0"></label>
+                <label>W <input type="number" id="crop-w" min="1" value="100"></label>
+                <label>H <input type="number" id="crop-h" min="1" value="100"></label>
+              </div>
+              <div class="help-inline">Drag corners on the preview to adjust.</div>
+            </div>
+          </div>
+
+          <div class="edit-section">
+            <div class="edit-section-title">Resize</div>
+            <label class="toggle-line">
+              <input type="checkbox" id="resize-enable">
+              Enable resize
+            </label>
+            <div class="resize-inputs" id="resize-inputs" hidden>
+              <div class="resize-fields">
+                <label>Width <input type="number" id="resize-w" min="1" value="800"></label>
+                <label>Height <input type="number" id="resize-h" min="1" value="600"></label>
+              </div>
+              <label class="toggle-line">
+                <input type="checkbox" id="aspect-lock" checked>
+                Lock aspect ratio
+              </label>
+            </div>
+          </div>
+
+          <div class="edit-actions">
+            <button type="button" id="edit-apply-btn" class="secondary-btn">
+              Apply
+            </button>
+            <button type="button" id="edit-reset-btn" class="text-btn">
+              Reset to original
+            </button>
+          </div>
+
+          <div id="edit-status" class="edit-status"></div>
+        </div>
+      </div>
+    </div>
+
     <div id="status" class="status-line" role="status" aria-live="polite"></div>
   </section>
 
@@ -90,6 +155,43 @@
     <a class="download-btn" id="download-btn" href="#" download>
       Download the recommended file
     </a>
+  </section>
+
+  <!-- COCO Y0 local approximation (on every upload) -->
+  <section class="panel coco-local-panel" id="coco-local-panel" hidden>
+    <div class="coco-local-head">
+      <h2>COCO Y0 — rank 1 (local approximation)</h2>
+      <span class="coco-local-badge">Approximate · not verified vs. MIAU</span>
+    </div>
+    <p class="help">
+      This is an independent ranking computed by a local OLS-based
+      approximation of COCO Y0. It's shown for comparison with the
+      recommendation above. If you want thesis-grade evidence, paste the
+      real MIAU output into the comparison panel below. Ties and small
+      sample sizes (5 variants) can make the approximation unstable —
+      treat as a second opinion, not a verdict.
+    </p>
+    <div class="coco-local-result">
+      <div class="coco-local-pick" id="coco-local-pick"></div>
+      <a class="download-btn" id="coco-local-download-btn" href="#" download>
+        Download the COCO rank-1 file
+      </a>
+    </div>
+    <details class="coco-local-details">
+      <summary>Full local ranking</summary>
+      <div class="table-scroll">
+        <table class="coco-local-table" id="coco-local-table">
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>Variant</th>
+              <th>Becslés</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </details>
   </section>
 
   <!-- Preview -->

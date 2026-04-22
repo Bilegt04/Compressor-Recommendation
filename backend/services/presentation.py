@@ -142,13 +142,18 @@ def build_friendly_variant(v: Dict[str, Any],
                            original_kb: float) -> Dict[str, Any]:
     """Per-variant friendly view for the comparison cards/table."""
     compressed_kb = v.get("compressed_size_kb", 0.0)
+    fmt = v.get("format", "")
+    q = v.get("encoder_quality_param")
     return {
-        "format_name": _friendly_format_name(v.get("format", "")),
-        "encoder_quality_param": v.get("encoder_quality_param"),
+        "format": fmt,                              # raw, for download URL
+        "format_name": _friendly_format_name(fmt),  # friendly label
+        "encoder_quality_param": q,
+        "variant_key": f"{fmt}_q{q}" if fmt and q is not None else "",
         "compressed_size_kb": compressed_kb,
         "percent_saved": _percent_saved(original_kb, compressed_kb),
         "psnr": v.get("psnr"),
         "ssim": v.get("ssim"),
         "is_recommended": bool(v.get("is_recommended", False)),
         "is_efficient": bool(v.get("is_pareto", False)),  # friendly rename
+        "is_coco_local_top": bool(v.get("is_coco_local_top", False)),
     }
